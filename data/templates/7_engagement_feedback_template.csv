@@ -1,0 +1,11 @@
+student_id,mentor_rating,club_participation_score,feedback_sentiment_pct
+STU0001,3.4,51.4,61.6
+STU0002,3.7,76.5,54.9
+STU0003,3.9,46.5,80.6
+STU0004,4.5,79.5,83.1
+STU0005,4.3,43.8,65.0
+STU0006,4.0,53.1,60.8
+STU0007,4.0,66.8,71.9
+STU0008,4.4,29.0,73.0
+STU0009,5.0,65.2,82.9
+STU0010,4.4,75.4,89.8

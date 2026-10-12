@@ -1,436 +1,427 @@
-"""
-data_processing.py — Data loading, validation, integration, and template generation.
+"""Data processing, schema validation, synthetic data generation, and CSV merging module.
 
-Responsibilities:
-- Load CSV files with column and data-type validation
-- Detect duplicate student IDs
-- Report missing values and data quality issues
-- Integrate datasets using student_id as the join key
-- Generate downloadable CSV templates
-- Graceful handling of missing or empty files
-
-Design decisions:
-- Never silently replace missing values with zero
-- Never double-count students after joins
-- All validation errors are collected, not raised immediately
+EduPredict AI - byteXL HacXLerate 2026 (Problem Statement 4 by KPMG in India)
 """
 
-import io
-from typing import Optional
-import pandas as pd
+import os
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+import pandas as pd
 
 
-# ---------- Schema definitions ----------
-
-SCHEMAS = {
-    "students": {
-        "required_columns": ["student_id", "student_name", "department"],
-        "optional_columns": ["semester", "email"],
-        "numeric_columns": ["semester"],
-        "ranges": {"semester": (1, 12)},
-    },
-    "academics": {
-        "required_columns": ["student_id", "subject"],
-        "optional_columns": ["internal_marks", "external_marks", "total_marks", "max_marks", "grade"],
-        "numeric_columns": ["internal_marks", "external_marks", "total_marks", "max_marks"],
-        "ranges": {
-            "internal_marks": (0, 100),
-            "external_marks": (0, 100),
-            "total_marks": (0, 100),
-            "max_marks": (1, 200),
-        },
-    },
-    "attendance": {
-        "required_columns": ["student_id"],
-        "optional_columns": ["total_classes", "classes_attended", "attendance_percentage"],
-        "numeric_columns": ["total_classes", "classes_attended", "attendance_percentage"],
-        "ranges": {
-            "total_classes": (0, 500),
-            "classes_attended": (0, 500),
-            "attendance_percentage": (0, 100),
-        },
-    },
-    "lms": {
-        "required_columns": ["student_id"],
-        "optional_columns": [
-            "total_assignments", "assignments_completed",
-            "assignment_completion_rate", "average_assignment_score",
-            "login_days", "resources_accessed",
-        ],
-        "numeric_columns": [
-            "total_assignments", "assignments_completed",
-            "assignment_completion_rate", "average_assignment_score",
-            "login_days", "resources_accessed",
-        ],
-        "ranges": {
-            "assignment_completion_rate": (0, 100),
-            "average_assignment_score": (0, 100),
-        },
-    },
-    "placement": {
-        "required_columns": ["student_id"],
-        "optional_columns": [
-            "aptitude_score", "coding_score",
-            "communication_score", "mock_interview_score",
-        ],
-        "numeric_columns": [
-            "aptitude_score", "coding_score",
-            "communication_score", "mock_interview_score",
-        ],
-        "ranges": {
-            "aptitude_score": (0, 100),
-            "coding_score": (0, 100),
-            "communication_score": (0, 100),
-            "mock_interview_score": (0, 100),
-        },
-    },
-    "skills": {
-        "required_columns": ["student_id", "skill_name"],
-        "optional_columns": ["proficiency_level"],
-        "numeric_columns": ["proficiency_level"],
-        "ranges": {"proficiency_level": (1, 10)},
-    },
-    "engagement": {
-        "required_columns": ["student_id"],
-        "optional_columns": [
-            "clubs_joined", "events_attended",
-            "peer_collaboration_score", "satisfaction_rating", "feedback",
-        ],
-        "numeric_columns": [
-            "clubs_joined", "events_attended",
-            "peer_collaboration_score", "satisfaction_rating",
-        ],
-        "ranges": {
-            "peer_collaboration_score": (1, 10),
-            "satisfaction_rating": (1, 10),
-        },
-    },
+# Schema definition with data types and valid numeric boundaries
+FEATURE_SCHEMA = {
+    # Demographics
+    "student_id": {"type": "string", "required": True},
+    "name": {"type": "string", "required": True},
+    "department": {"type": "string", "required": True},
+    "semester": {"type": "string", "required": True},
+    "gender": {"type": "string", "required": False},
+    # Academic Indicators
+    "cgpa": {"type": "float", "min": 0.0, "max": 10.0, "required": False},
+    "backlogs": {"type": "int", "min": 0, "max": 20, "required": False},
+    "internal_test_pct": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    # Attendance Indicators
+    "attendance_pct": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "lab_attendance_pct": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    # LMS Indicators
+    "lms_assignment_completion_pct": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "lms_video_watch_pct": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "lms_login_frequency_per_week": {"type": "float", "min": 0.0, "max": 30.0, "required": False},
+    # Placement Readiness
+    "aptitude_score": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "mock_interview_score": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "placement_registered": {"type": "string", "required": False},
+    # Skills Assessment
+    "coding_score": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "technical_mcq_score": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "certifications_count": {"type": "int", "min": 0, "max": 15, "required": False},
+    # Engagement and Feedback
+    "mentor_rating": {"type": "float", "min": 1.0, "max": 5.0, "required": False},
+    "club_participation_score": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
+    "feedback_sentiment_pct": {"type": "float", "min": 0.0, "max": 100.0, "required": False},
 }
 
+# The 6 core indicator pillars for student success evaluation
+CORE_PILLARS = [
+    "academic_performance",
+    "attendance",
+    "lms_completion",
+    "placement_readiness",
+    "skills_assessment",
+    "engagement_feedback",
+]
 
-# ---------- Validation ----------
 
-class ValidationResult:
-    """Collects validation warnings and errors for a dataset."""
+def generate_synthetic_dataset(num_students: int = 100, seed: int = 42) -> pd.DataFrame:
+    """Generate a realistic, deterministic synthetic dataset of fictional students.
+    
+    Includes diverse departments, balanced gender distributions, realistic academic
+    spread, and explicit edge cases (e.g. high academic but low placement, low attendance
+    with decent CGPA, multi-risk students, incomplete records).
+    """
+    np.random.seed(seed)
 
-    def __init__(self, dataset_name: str):
-        self.dataset_name = dataset_name
-        self.errors: list[str] = []
-        self.warnings: list[str] = []
-        self.row_count: int = 0
-        self.column_count: int = 0
-        self.missing_summary: dict[str, int] = {}
-        self.duplicate_ids: list[str] = []
-        self.is_valid: bool = True
+    departments = [
+        "Computer Science",
+        "Information Technology",
+        "Electronics & Comm",
+        "Mechanical",
+        "Data Science & AI",
+    ]
+    semesters = ["Semester 4", "Semester 6", "Semester 8"]
+    first_names = [
+        "Aarav", "Aditi", "Ananya", "Arjun", "Bhavna", "Chirag", "Divya", "Farhan",
+        "Gauri", "Harsh", "Ishaan", "Jaya", "Karan", "Kavya", "Manish", "Neha",
+        "Nikhil", "Pooja", "Pranav", "Priya", "Rahul", "Rhea", "Rohan", "Sanjana",
+        "Siddharth", "Sneha", "Tanvi", "Varun", "Vikram", "Zoya", "Ayush", "Meera",
+        "Ritik", "Shreya", "Kabir", "Simran", "Deepak", "Swati", "Mohit", "Anjali"
+    ]
+    last_names = [
+        "Sharma", "Verma", "Patel", "Reddy", "Nair", "Iyer", "Gupta", "Singh",
+        "Mehta", "Rao", "Kumar", "Das", "Joshi", "Bose", "Chopra", "Chatterjee",
+        "Pandey", "Mishra", "Deshmukh", "Pillai", "Kulkarni", "Aggarwal", "Chauhan"
+    ]
 
-    def add_error(self, msg: str):
-        self.errors.append(msg)
-        self.is_valid = False
+    records: List[Dict[str, Any]] = []
 
-    def add_warning(self, msg: str):
-        self.warnings.append(msg)
+    for i in range(1, num_students + 1):
+        s_id = f"STU{i:04d}"
+        fn = first_names[(i * 3 + 7) % len(first_names)]
+        ln = last_names[(i * 5 + 11) % len(last_names)]
+        name = f"{fn} {ln}"
+        gender = "Female" if (i % 2 == 0) else "Male"
+        dept = departments[i % len(departments)]
+        sem = semesters[i % len(semesters)]
 
-    def summary_dict(self) -> dict:
-        return {
-            "dataset": self.dataset_name,
-            "rows": self.row_count,
-            "columns": self.column_count,
-            "is_valid": self.is_valid,
-            "errors": self.errors,
-            "warnings": self.warnings,
-            "missing_values": self.missing_summary,
-            "duplicate_ids": self.duplicate_ids,
+        # Base distributions
+        cgpa = round(np.clip(np.random.normal(7.4, 1.2), 3.5, 9.9), 2)
+        backlogs = int(np.random.choice([0, 1, 2, 3, 4], p=[0.72, 0.16, 0.07, 0.03, 0.02]))
+        internal_pct = round(np.clip(cgpa * 9.5 + np.random.normal(0, 5), 35.0, 98.0), 1)
+
+        attendance = round(np.clip(np.random.normal(78.0, 12.0), 38.0, 99.0), 1)
+        lab_attendance = round(np.clip(attendance + np.random.normal(2.0, 5.0), 35.0, 100.0), 1)
+
+        lms_completion = round(np.clip(np.random.normal(75.0, 15.0), 20.0, 100.0), 1)
+        lms_video = round(np.clip(lms_completion + np.random.normal(-3.0, 8.0), 15.0, 99.0), 1)
+        lms_logins = round(np.clip(np.random.normal(6.5, 2.5), 1.0, 16.0), 1)
+
+        aptitude = round(np.clip(np.random.normal(68.0, 15.0), 25.0, 98.0), 1)
+        mock_interview = round(np.clip(np.random.normal(65.0, 16.0), 20.0, 96.0), 1)
+        placement_reg = "Yes" if (sem in ["Semester 6", "Semester 8"] and np.random.rand() > 0.1) else "No"
+
+        coding = round(np.clip(np.random.normal(66.0, 18.0), 20.0, 99.0), 1)
+        tech_mcq = round(np.clip(np.random.normal(70.0, 14.0), 25.0, 95.0), 1)
+        certs = int(np.random.choice([0, 1, 2, 3, 4, 5], p=[0.25, 0.35, 0.22, 0.12, 0.04, 0.02]))
+
+        mentor_rating = round(np.clip(np.random.normal(3.8, 0.7), 1.5, 5.0), 1)
+        club_participation = round(np.clip(np.random.normal(60.0, 20.0), 10.0, 100.0), 1)
+        sentiment_pct = round(np.clip(np.random.normal(72.0, 14.0), 25.0, 98.0), 1)
+
+        # Inject specific edge cases at deterministic indices
+        # Edge Case 1: Strong academics, low placement readiness (indices 10 to 14)
+        if 10 <= i <= 14:
+            cgpa = round(float(np.random.uniform(8.7, 9.8)), 2)
+            backlogs = 0
+            internal_pct = round(float(np.random.uniform(88.0, 96.0)), 1)
+            aptitude = round(float(np.random.uniform(32.0, 48.0)), 1)
+            mock_interview = round(float(np.random.uniform(28.0, 46.0)), 1)
+            coding = round(float(np.random.uniform(35.0, 52.0)), 1)
+            attendance = round(float(np.random.uniform(84.0, 95.0)), 1)
+
+        # Edge Case 2: Low attendance, reasonable academics (indices 20 to 24)
+        elif 20 <= i <= 24:
+            attendance = round(float(np.random.uniform(52.0, 68.0)), 1)
+            lab_attendance = round(float(np.random.uniform(50.0, 70.0)), 1)
+            cgpa = round(float(np.random.uniform(7.4, 8.6)), 2)
+            backlogs = 0
+            internal_pct = round(float(np.random.uniform(72.0, 85.0)), 1)
+
+        # Edge Case 3: Low academics, adequate attendance (indices 30 to 34)
+        elif 30 <= i <= 34:
+            cgpa = round(float(np.random.uniform(4.0, 5.4)), 2)
+            backlogs = int(np.random.choice([2, 3, 4]))
+            internal_pct = round(float(np.random.uniform(40.0, 54.0)), 1)
+            attendance = round(float(np.random.uniform(82.0, 94.0)), 1)
+            lab_attendance = round(float(np.random.uniform(80.0, 95.0)), 1)
+
+        # Edge Case 4: Multiple support needs (indices 40 to 44)
+        elif 40 <= i <= 44:
+            cgpa = round(float(np.random.uniform(3.8, 5.2)), 2)
+            backlogs = int(np.random.choice([2, 3, 5]))
+            attendance = round(float(np.random.uniform(44.0, 64.0)), 1)
+            aptitude = round(float(np.random.uniform(30.0, 45.0)), 1)
+            mock_interview = round(float(np.random.uniform(25.0, 42.0)), 1)
+            coding = round(float(np.random.uniform(22.0, 40.0)), 1)
+
+        # Edge Case 5: Missing placement data (indices 50 to 52)
+        elif 50 <= i <= 52:
+            aptitude = np.nan
+            mock_interview = np.nan
+            placement_reg = "No"
+
+        # Edge Case 6: Missing LMS & Skills data (indices 60 to 61)
+        elif 60 <= i <= 61:
+            lms_completion = np.nan
+            lms_video = np.nan
+            coding = np.nan
+            technical_mcq = np.nan
+
+        # Edge Case 7: High performer across all metrics (indices 70 to 74)
+        elif 70 <= i <= 74:
+            cgpa = round(float(np.random.uniform(9.1, 9.8)), 2)
+            backlogs = 0
+            attendance = round(float(np.random.uniform(90.0, 98.0)), 1)
+            aptitude = round(float(np.random.uniform(85.0, 96.0)), 1)
+            mock_interview = round(float(np.random.uniform(85.0, 95.0)), 1)
+            coding = round(float(np.random.uniform(88.0, 99.0)), 1)
+            lms_completion = round(float(np.random.uniform(92.0, 100.0)), 1)
+
+        # Edge Case 8: Insufficient Data record (almost all metrics missing) (index 90)
+        elif i == 90:
+            cgpa = np.nan
+            backlogs = np.nan
+            internal_pct = np.nan
+            attendance = np.nan
+            lab_attendance = np.nan
+            lms_completion = np.nan
+            lms_video = np.nan
+            aptitude = np.nan
+            mock_interview = np.nan
+            coding = np.nan
+            tech_mcq = np.nan
+            mentor_rating = np.nan
+
+        record = {
+            "student_id": s_id,
+            "name": name,
+            "department": dept,
+            "semester": sem,
+            "gender": gender,
+            "cgpa": cgpa,
+            "backlogs": backlogs,
+            "internal_test_pct": internal_pct,
+            "attendance_pct": attendance,
+            "lab_attendance_pct": lab_attendance,
+            "lms_assignment_completion_pct": lms_completion,
+            "lms_video_watch_pct": lms_video,
+            "lms_login_frequency_per_week": lms_logins,
+            "aptitude_score": aptitude,
+            "mock_interview_score": mock_interview,
+            "placement_registered": placement_reg,
+            "coding_score": coding,
+            "technical_mcq_score": tech_mcq,
+            "certifications_count": certs,
+            "mentor_rating": mentor_rating,
+            "club_participation_score": club_participation,
+            "feedback_sentiment_pct": sentiment_pct,
         }
+        records.append(record)
+
+    df = pd.DataFrame(records)
+    return df
 
 
-def validate_dataframe(df: pd.DataFrame, dataset_name: str) -> ValidationResult:
-    """
-    Validate a DataFrame against its schema definition.
-
+def validate_dataframe(df: pd.DataFrame) -> Tuple[bool, Dict[str, Any]]:
+    """Validate DataFrame against the feature schema.
+    
     Checks:
-    - Required columns exist
-    - Numeric columns have correct dtype (or can be coerced)
-    - Values are within defined ranges
-    - Missing value counts
-    - Duplicate student_id detection
+    - Missing required identifier columns
+    - Duplicate student IDs
+    - Out-of-bounds numeric values
+    - Missing-value summaries
+    - Row-level completeness assessment
     """
-    result = ValidationResult(dataset_name)
-    schema = SCHEMAS.get(dataset_name)
-
-    if schema is None:
-        result.add_warning(f"No schema defined for '{dataset_name}'. Skipping validation.")
-        result.row_count = len(df)
-        result.column_count = len(df.columns)
-        return result
-
-    result.row_count = len(df)
-    result.column_count = len(df.columns)
-
-    # Check required columns
-    for col in schema["required_columns"]:
-        if col not in df.columns:
-            result.add_error(f"Missing required column: '{col}'")
-
-    # Missing value summary
-    for col in df.columns:
-        missing = int(df[col].isna().sum())
-        if missing > 0:
-            result.missing_summary[col] = missing
-            pct = round(missing / len(df) * 100, 1)
-            result.add_warning(f"Column '{col}' has {missing} missing values ({pct}%)")
-
-    # Numeric type validation and range checks
-    for col in schema.get("numeric_columns", []):
-        if col not in df.columns:
-            continue
-        # Try to coerce to numeric
-        original_non_null = df[col].notna().sum()
-        numeric_series = pd.to_numeric(df[col], errors="coerce")
-        coerced_nulls = original_non_null - numeric_series.notna().sum()
-        if coerced_nulls > 0:
-            result.add_warning(
-                f"Column '{col}': {coerced_nulls} values could not be converted to numeric"
-            )
-
-        # Range check
-        if col in schema.get("ranges", {}):
-            low, high = schema["ranges"][col]
-            valid_vals = numeric_series.dropna()
-            out_of_range = ((valid_vals < low) | (valid_vals > high)).sum()
-            if out_of_range > 0:
-                result.add_warning(
-                    f"Column '{col}': {out_of_range} values outside expected range [{low}, {high}]"
-                )
-
-    # Duplicate student IDs
-    if "student_id" in df.columns:
-        # For datasets like academics/skills, duplicate student_id is expected (multiple rows per student)
-        if dataset_name in ("students", "attendance", "lms", "placement", "engagement"):
-            dupes = df[df["student_id"].duplicated(keep=False)]["student_id"].unique().tolist()
-            if dupes:
-                result.duplicate_ids = dupes[:10]  # Cap at 10 for display
-                result.add_warning(
-                    f"Found {len(dupes)} duplicate student_id(s): {dupes[:5]}..."
-                    if len(dupes) > 5 else
-                    f"Found {len(dupes)} duplicate student_id(s): {dupes}"
-                )
-
-    return result
-
-
-def load_csv(file_or_path, dataset_name: str) -> tuple[Optional[pd.DataFrame], ValidationResult]:
-    """
-    Load a CSV from a file path or file-like object.
-    Returns (DataFrame or None, ValidationResult).
-    """
-    result = ValidationResult(dataset_name)
-
-    try:
-        if isinstance(file_or_path, str):
-            df = pd.read_csv(file_or_path)
-        else:
-            df = pd.read_csv(file_or_path)
-
-        if df.empty:
-            result.add_error(f"File for '{dataset_name}' is empty (0 rows).")
-            return None, result
-
-        validation = validate_dataframe(df, dataset_name)
-        return df, validation
-
-    except pd.errors.EmptyDataError:
-        result.add_error(f"File for '{dataset_name}' contains no data.")
-        return None, result
-    except Exception as e:
-        result.add_error(f"Error loading '{dataset_name}': {str(e)}")
-        return None, result
-
-
-# ---------- Data Integration ----------
-
-def aggregate_academics(academics_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate subject-level academic data to student level.
-    Returns one row per student with average marks and subject count.
-    """
-    if academics_df is None or academics_df.empty:
-        return pd.DataFrame()
-
-    agg = academics_df.groupby("student_id").agg(
-        avg_total_marks=("total_marks", "mean"),
-        avg_internal_marks=("internal_marks", "mean"),
-        avg_external_marks=("external_marks", "mean"),
-        subject_count=("subject", "count"),
-        subjects_passed=("total_marks", lambda x: (x >= 40).sum()),
-    ).reset_index()
-
-    agg["avg_total_marks"] = agg["avg_total_marks"].round(1)
-    agg["avg_internal_marks"] = agg["avg_internal_marks"].round(1)
-    agg["avg_external_marks"] = agg["avg_external_marks"].round(1)
-    return agg
-
-
-def aggregate_skills(skills_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate skill-level data to student level.
-    Returns one row per student with average proficiency, skill count, and top skills.
-    """
-    if skills_df is None or skills_df.empty:
-        return pd.DataFrame()
-
-    agg = skills_df.groupby("student_id").agg(
-        avg_proficiency=("proficiency_level", "mean"),
-        skill_count=("skill_name", "count"),
-        top_skills=("skill_name", lambda x: ", ".join(
-            skills_df.loc[x.index].nlargest(3, "proficiency_level")["skill_name"].tolist()
-        )),
-    ).reset_index()
-
-    agg["avg_proficiency"] = agg["avg_proficiency"].round(1)
-    return agg
-
-
-def integrate_datasets(datasets: dict[str, Optional[pd.DataFrame]]) -> pd.DataFrame:
-    """
-    Integrate all datasets into a single student-level DataFrame using left joins
-    on student_id. The students table is the anchor.
-
-    Never double-counts students. Aggregates multi-row datasets first.
-    Never silently replaces missing values with zero.
-    """
-    students = datasets.get("students")
-    if students is None or students.empty:
-        return pd.DataFrame()
-
-    merged = students.copy()
-
-    # Aggregate multi-row datasets
-    if datasets.get("academics") is not None and not datasets["academics"].empty:
-        academics_agg = aggregate_academics(datasets["academics"])
-        merged = merged.merge(academics_agg, on="student_id", how="left")
-
-    if datasets.get("attendance") is not None and not datasets["attendance"].empty:
-        merged = merged.merge(datasets["attendance"], on="student_id", how="left", suffixes=("", "_att"))
-
-    if datasets.get("lms") is not None and not datasets["lms"].empty:
-        merged = merged.merge(datasets["lms"], on="student_id", how="left", suffixes=("", "_lms"))
-
-    if datasets.get("placement") is not None and not datasets["placement"].empty:
-        merged = merged.merge(datasets["placement"], on="student_id", how="left", suffixes=("", "_plc"))
-
-    if datasets.get("skills") is not None and not datasets["skills"].empty:
-        skills_agg = aggregate_skills(datasets["skills"])
-        merged = merged.merge(skills_agg, on="student_id", how="left", suffixes=("", "_sk"))
-
-    if datasets.get("engagement") is not None and not datasets["engagement"].empty:
-        merged = merged.merge(datasets["engagement"], on="student_id", how="left", suffixes=("", "_eng"))
-
-    # Ensure no duplicate student_ids after merge
-    if merged["student_id"].duplicated().any():
-        merged = merged.drop_duplicates(subset="student_id", keep="first")
-
-    return merged
-
-
-# ---------- Templates ----------
-
-TEMPLATES = {
-    "students": pd.DataFrame({
-        "student_id": ["STU0001", "STU0002"],
-        "student_name": ["Example Student 1", "Example Student 2"],
-        "department": ["Computer Science", "Electronics"],
-        "semester": [5, 6],
-        "email": ["student1@university.edu", "student2@university.edu"],
-    }),
-    "academics": pd.DataFrame({
-        "student_id": ["STU0001", "STU0001", "STU0002"],
-        "subject": ["Data Structures", "Algorithms", "Signal Processing"],
-        "internal_marks": [35.0, 28.0, 32.0],
-        "external_marks": [52.0, 45.0, 48.0],
-        "total_marks": [87.0, 73.0, 80.0],
-        "max_marks": [100, 100, 100],
-        "grade": ["A+", "A", "A+"],
-    }),
-    "attendance": pd.DataFrame({
-        "student_id": ["STU0001", "STU0002"],
-        "total_classes": [100, 95],
-        "classes_attended": [88, 72],
-        "attendance_percentage": [88.0, 75.8],
-    }),
-    "lms": pd.DataFrame({
-        "student_id": ["STU0001", "STU0002"],
-        "total_assignments": [20, 22],
-        "assignments_completed": [18, 15],
-        "assignment_completion_rate": [90.0, 68.2],
-        "average_assignment_score": [78.5, 62.0],
-        "login_days": [45, 30],
-        "resources_accessed": [38, 22],
-    }),
-    "placement": pd.DataFrame({
-        "student_id": ["STU0001", "STU0002"],
-        "aptitude_score": [72.0, 55.0],
-        "coding_score": [68.0, 45.0],
-        "communication_score": [80.0, 60.0],
-        "mock_interview_score": [65.0, 50.0],
-    }),
-    "skills": pd.DataFrame({
-        "student_id": ["STU0001", "STU0001", "STU0002"],
-        "skill_name": ["Python", "SQL", "Java"],
-        "proficiency_level": [8, 7, 6],
-    }),
-    "engagement": pd.DataFrame({
-        "student_id": ["STU0001", "STU0002"],
-        "clubs_joined": [2, 1],
-        "events_attended": [5, 3],
-        "peer_collaboration_score": [8, 6],
-        "satisfaction_rating": [9, 7],
-        "feedback": ["Great experience.", "Average experience."],
-    }),
-}
-
-
-def get_template_csv(dataset_name: str) -> str:
-    """Return CSV string for a template."""
-    template = TEMPLATES.get(dataset_name)
-    if template is None:
-        return ""
-    return template.to_csv(index=False)
-
-
-def get_data_completeness(integrated_df: pd.DataFrame) -> dict:
-    """
-    Calculate data completeness metrics for the integrated dataset.
-    Returns dict with overall and per-indicator completeness percentages.
-    """
-    if integrated_df.empty:
-        return {"overall": 0.0, "indicators": {}}
-
-    total_students = len(integrated_df)
-
-    indicator_columns = {
-        "Academic": "avg_total_marks",
-        "Attendance": "attendance_percentage",
-        "LMS": "assignment_completion_rate",
-        "Placement (Aptitude)": "aptitude_score",
-        "Placement (Coding)": "coding_score",
-        "Skills": "avg_proficiency",
-        "Engagement": "satisfaction_rating",
+    report: Dict[str, Any] = {
+        "is_valid": True,
+        "total_rows": len(df),
+        "total_cols": len(df.columns),
+        "errors": [],
+        "warnings": [],
+        "missing_summary": {},
+        "duplicate_ids": [],
+        "range_violations": [],
+        "completeness_avg": 0.0,
     }
 
-    indicators = {}
-    total_available = 0
-    total_possible = 0
+    if df.empty:
+        report["is_valid"] = False
+        report["errors"].append("Uploaded dataset is empty.")
+        return False, report
 
-    for name, col in indicator_columns.items():
-        if col in integrated_df.columns:
-            available = int(integrated_df[col].notna().sum())
-            indicators[name] = round(available / total_students * 100, 1)
-            total_available += available
+    # 1. Required identifier check
+    if "student_id" not in df.columns:
+        report["is_valid"] = False
+        report["errors"].append("Critical column 'student_id' is missing from the dataset.")
+        return False, report
+
+    # 2. Duplicate student ID check
+    dup_ids = df[df["student_id"].duplicated(keep=False)]["student_id"].unique().tolist()
+    if dup_ids:
+        report["duplicate_ids"] = [str(x) for x in dup_ids]
+        report["warnings"].append(
+            f"Found {len(dup_ids)} duplicate student ID(s): {dup_ids[:5]}"
+            + ("..." if len(dup_ids) > 5 else "")
+        )
+
+    # 3. Missing values summary
+    missing = df.isnull().sum()
+    report["missing_summary"] = {
+        col: int(cnt) for col, cnt in missing.items() if cnt > 0
+    }
+
+    # 4. Numeric Range Validation
+    for col, spec in FEATURE_SCHEMA.items():
+        if col in df.columns and ("min" in spec or "max" in spec):
+            col_series = pd.to_numeric(df[col], errors="coerce")
+            min_val = spec.get("min")
+            max_val = spec.get("max")
+
+            if min_val is not None:
+                below = df[col_series < min_val]
+                if not below.empty:
+                    msg = f"Column '{col}' has {len(below)} values below minimum allowed {min_val}."
+                    report["range_violations"].append(msg)
+                    report["warnings"].append(msg)
+
+            if max_val is not None:
+                above = df[col_series > max_val]
+                if not above.empty:
+                    msg = f"Column '{col}' has {len(above)} values exceeding maximum allowed {max_val}."
+                    report["range_violations"].append(msg)
+                    report["warnings"].append(msg)
+
+    # 5. Row-level indicator completeness
+    indicator_cols = [
+        "cgpa", "internal_test_pct", "attendance_pct",
+        "lms_assignment_completion_pct", "aptitude_score",
+        "mock_interview_score", "coding_score", "mentor_rating"
+    ]
+    present_indicators = [c for c in indicator_cols if c in df.columns]
+    if present_indicators:
+        non_null_counts = df[present_indicators].notnull().sum(axis=1)
+        completeness_pcts = (non_null_counts / len(present_indicators)) * 100.0
+        report["completeness_avg"] = round(float(completeness_pcts.mean()), 1)
+    else:
+        report["completeness_avg"] = 0.0
+
+    return report["is_valid"], report
+
+
+def merge_student_datasets(datasets: Dict[str, pd.DataFrame]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Merge multiple separate domain CSV tables on 'student_id'.
+    
+    Prevents double counting or silent drops by using outer join on student_id,
+    with an audit summary.
+    """
+    audit: Dict[str, Any] = {
+        "source_tables": list(datasets.keys()),
+        "table_row_counts": {k: len(v) for k, v in datasets.items()},
+        "merged_rows": 0,
+        "warnings": [],
+    }
+
+    if not datasets:
+        return pd.DataFrame(), audit
+
+    # Start with student demographics table if present, otherwise first available
+    primary_key = "student_id"
+    tables = list(datasets.items())
+
+    merged_df = None
+    for name, df in tables:
+        if primary_key not in df.columns:
+            audit["warnings"].append(f"Table '{name}' lacks '{primary_key}' and was skipped.")
+            continue
+
+        clean_df = df.copy()
+        # Drop duplicates within table on student_id
+        if clean_df[primary_key].duplicated().any():
+            audit["warnings"].append(f"Table '{name}' had duplicate IDs; keeping first occurrence.")
+            clean_df = clean_df.drop_duplicates(subset=[primary_key], keep="first")
+
+        if merged_df is None:
+            merged_df = clean_df
         else:
-            indicators[name] = 0.0
-        total_possible += total_students
+            # Suffix overlapping non-key columns if any
+            overlap = [c for c in clean_df.columns if c in merged_df.columns and c != primary_key]
+            if overlap:
+                for col in overlap:
+                    # Keep existing non-null or combine
+                    clean_df = clean_df.rename(columns={col: f"{col}_{name}"})
 
-    overall = round(total_available / total_possible * 100, 1) if total_possible > 0 else 0.0
+            merged_df = pd.merge(merged_df, clean_df, on=primary_key, how="outer")
 
-    return {"overall": overall, "indicators": indicators}
+    if merged_df is not None:
+        audit["merged_rows"] = len(merged_df)
+    else:
+        merged_df = pd.DataFrame()
+
+    return merged_df, audit
+
+
+def save_sample_templates(output_dir: str = "data/templates") -> Dict[str, str]:
+    """Generate and save downloadable sample CSV templates and synthetic dataset."""
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(output_dir) or "data", exist_ok=True)
+
+    # 1. Full Unified Template
+    unified_df = generate_synthetic_dataset(num_students=100, seed=42)
+    unified_path = os.path.join(output_dir, "unified_student_dataset_template.csv")
+    unified_df.to_csv(unified_path, index=False)
+
+    # Also save as main demonstration dataset
+    main_demo_path = os.path.join(os.path.dirname(output_dir), "synthetic_students.csv")
+    unified_df.to_csv(main_demo_path, index=False)
+
+    # 2. Demographics Template
+    demo_cols = ["student_id", "name", "department", "semester", "gender"]
+    demo_path = os.path.join(output_dir, "1_student_demographics_template.csv")
+    unified_df[demo_cols].head(10).to_csv(demo_path, index=False)
+
+    # 3. Academics Template
+    acad_cols = ["student_id", "cgpa", "backlogs", "internal_test_pct"]
+    acad_path = os.path.join(output_dir, "2_academics_template.csv")
+    unified_df[acad_cols].head(10).to_csv(acad_path, index=False)
+
+    # 4. Attendance Template
+    att_cols = ["student_id", "attendance_pct", "lab_attendance_pct"]
+    att_path = os.path.join(output_dir, "3_attendance_template.csv")
+    unified_df[att_cols].head(10).to_csv(att_path, index=False)
+
+    # 5. LMS Template
+    lms_cols = [
+        "student_id",
+        "lms_assignment_completion_pct",
+        "lms_video_watch_pct",
+        "lms_login_frequency_per_week",
+    ]
+    lms_path = os.path.join(output_dir, "4_lms_activity_template.csv")
+    unified_df[lms_cols].head(10).to_csv(lms_path, index=False)
+
+    # 6. Placement Template
+    place_cols = ["student_id", "aptitude_score", "mock_interview_score", "placement_registered"]
+    place_path = os.path.join(output_dir, "5_placement_readiness_template.csv")
+    unified_df[place_cols].head(10).to_csv(place_path, index=False)
+
+    # 7. Skills Assessment Template
+    skills_cols = ["student_id", "coding_score", "technical_mcq_score", "certifications_count"]
+    skills_path = os.path.join(output_dir, "6_skills_assessment_template.csv")
+    unified_df[skills_cols].head(10).to_csv(skills_path, index=False)
+
+    # 8. Engagement & Feedback Template
+    eng_cols = ["student_id", "mentor_rating", "club_participation_score", "feedback_sentiment_pct"]
+    eng_path = os.path.join(output_dir, "7_engagement_feedback_template.csv")
+    unified_df[eng_cols].head(10).to_csv(eng_path, index=False)
+
+    return {
+        "unified": unified_path,
+        "demographics": demo_path,
+        "academics": acad_path,
+        "attendance": att_path,
+        "lms": lms_path,
+        "placement": place_path,
+        "skills": skills_path,
+        "engagement": eng_path,
+        "demo_data": main_demo_path,
+    }

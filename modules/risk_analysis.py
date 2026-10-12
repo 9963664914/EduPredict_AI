@@ -1,239 +1,214 @@
-"""
-risk_analysis.py — Independent academic and placement support evaluation.
+"""Independent academic and placement risk assessment with transparent rule factors.
 
-Evaluates academic and placement support needs using transparent,
-configurable threshold-based rules. Each support flag includes the
-exact factors that triggered it.
-
-IMPORTANT: These are prototype indicators based on configurable thresholds.
-They are NOT validated predictions of academic failure or placement outcomes.
-Human review is essential before taking any action based on these flags.
-
-Labels used:
-- "On Track" — indicators meet or exceed thresholds
-- "Needs Review" — one or more indicators are borderline
-- "Support Recommended" — multiple indicators below threshold
-- "Insufficient Data" — not enough data to assess
+EduPredict AI - byteXL HacXLerate 2026 (Problem Statement 4 by KPMG in India)
 """
 
-import pandas as pd
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
-from typing import Optional
+import pandas as pd
 
 
-# ---------- Configurable Thresholds ----------
-
-ACADEMIC_THRESHOLDS = {
-    "marks_low": 45,           # Below this = support recommended
-    "marks_borderline": 60,    # Below this = needs review
-    "attendance_low": 65,      # Below this = attendance concern
-    "attendance_borderline": 75,
-    "lms_completion_low": 50,
-    "lms_completion_borderline": 70,
+# Configurable risk assessment thresholds
+DEFAULT_RISK_THRESHOLDS = {
+    # Academic thresholds
+    "academic_cgpa_critical": 6.0,
+    "academic_cgpa_warning": 7.0,
+    "academic_attendance_critical": 65.0,
+    "academic_attendance_warning": 75.0,
+    "academic_backlogs_critical": 2,
+    "academic_score_critical": 55.0,
+    "academic_score_warning": 65.0,
+    # Placement thresholds
+    "placement_aptitude_critical": 50.0,
+    "placement_aptitude_warning": 65.0,
+    "placement_interview_critical": 50.0,
+    "placement_interview_warning": 65.0,
+    "placement_coding_critical": 45.0,
+    "placement_coding_warning": 60.0,
+    "placement_score_critical": 50.0,
+    "placement_score_warning": 65.0,
 }
 
-PLACEMENT_THRESHOLDS = {
-    "aptitude_low": 45,
-    "aptitude_borderline": 60,
-    "coding_low": 40,
-    "coding_borderline": 55,
-    "communication_low": 45,
-    "communication_borderline": 60,
-    "mock_interview_low": 40,
-    "mock_interview_borderline": 55,
-}
 
-
-# ---------- Academic Support Assessment ----------
-
-def assess_academic_support(row: pd.Series) -> dict:
+def assess_student_academic_risk(
+    row: pd.Series,
+    thresholds: Optional[Dict[str, float]] = None
+) -> Tuple[str, List[str]]:
+    """Evaluate academic support need independently based on clear heuristic rules.
+    
+    Returns:
+    - status: 'Support recommended' | 'Needs review' | 'On track' | 'Insufficient data'
+    - reasons: list of explanatory factor strings
     """
-    Assess academic support needs for a single student.
+    th = thresholds or DEFAULT_RISK_THRESHOLDS
+    reasons: List[str] = []
 
-    Returns dict with:
-    - status: str — "On Track", "Needs Review", "Support Recommended", "Insufficient Data"
-    - factors: list[str] — specific reasons for the status
-    - indicator_details: dict — individual indicator assessments
-    """
-    factors = []
-    indicator_details = {}
-    indicators_available = 0
-    concerns = 0
-    borderline = 0
+    cgpa = row.get("cgpa")
+    backlogs = row.get("backlogs")
+    att = row.get("attendance_pct")
+    acad_score = row.get("pillar_academic")
 
-    # Academic marks
-    marks = row.get("avg_total_marks")
-    if pd.notna(marks):
-        indicators_available += 1
-        marks = float(marks)
-        if marks < ACADEMIC_THRESHOLDS["marks_low"]:
-            concerns += 1
-            factors.append(f"Average marks ({marks:.1f}%) below {ACADEMIC_THRESHOLDS['marks_low']}% threshold")
-            indicator_details["marks"] = "Low"
-        elif marks < ACADEMIC_THRESHOLDS["marks_borderline"]:
-            borderline += 1
-            factors.append(f"Average marks ({marks:.1f}%) borderline (below {ACADEMIC_THRESHOLDS['marks_borderline']}%)")
-            indicator_details["marks"] = "Borderline"
-        else:
-            indicator_details["marks"] = "On Track"
+    has_cgpa = not pd.isna(cgpa)
+    has_att = not pd.isna(att)
+    has_acad = not pd.isna(acad_score)
 
-    # Attendance
-    attendance = row.get("attendance_percentage")
-    if pd.notna(attendance):
-        indicators_available += 1
-        attendance = float(attendance)
-        if attendance < ACADEMIC_THRESHOLDS["attendance_low"]:
-            concerns += 1
-            factors.append(f"Attendance ({attendance:.1f}%) below {ACADEMIC_THRESHOLDS['attendance_low']}% threshold")
-            indicator_details["attendance"] = "Low"
-        elif attendance < ACADEMIC_THRESHOLDS["attendance_borderline"]:
-            borderline += 1
-            factors.append(f"Attendance ({attendance:.1f}%) borderline (below {ACADEMIC_THRESHOLDS['attendance_borderline']}%)")
-            indicator_details["attendance"] = "Borderline"
-        else:
-            indicator_details["attendance"] = "On Track"
+    # Check for insufficient data
+    if not has_cgpa and not has_att and not has_acad:
+        return "Insufficient data", ["No academic or attendance records available to evaluate academic progress."]
 
-    # LMS completion
-    lms = row.get("assignment_completion_rate")
-    if pd.notna(lms):
-        indicators_available += 1
-        lms = float(lms)
-        if lms < ACADEMIC_THRESHOLDS["lms_completion_low"]:
-            concerns += 1
-            factors.append(f"Assignment completion ({lms:.1f}%) below {ACADEMIC_THRESHOLDS['lms_completion_low']}% threshold")
-            indicator_details["lms_completion"] = "Low"
-        elif lms < ACADEMIC_THRESHOLDS["lms_completion_borderline"]:
-            borderline += 1
-            factors.append(f"Assignment completion ({lms:.1f}%) borderline (below {ACADEMIC_THRESHOLDS['lms_completion_borderline']}%)")
-            indicator_details["lms_completion"] = "Borderline"
-        else:
-            indicator_details["lms_completion"] = "On Track"
+    critical_reasons: List[str] = []
+    review_reasons: List[str] = []
 
-    # Determine overall status
-    if indicators_available == 0:
-        status = "Insufficient Data"
-        factors.append("No academic, attendance, or LMS data available for assessment")
-    elif concerns >= 2:
-        status = "Support Recommended"
-    elif concerns >= 1 or borderline >= 2:
-        status = "Needs Review"
+    # CGPA evaluation
+    if has_cgpa:
+        cgpa_val = float(cgpa)
+        if cgpa_val < th["academic_cgpa_critical"]:
+            critical_reasons.append(f"CGPA ({cgpa_val:.2f}) is below critical threshold of {th['academic_cgpa_critical']}")
+        elif cgpa_val < th["academic_cgpa_warning"]:
+            review_reasons.append(f"CGPA ({cgpa_val:.2f}) is below target threshold of {th['academic_cgpa_warning']}")
+
+    # Backlog evaluation
+    if not pd.isna(backlogs):
+        b_val = int(backlogs)
+        if b_val >= th["academic_backlogs_critical"]:
+            critical_reasons.append(f"Active backlogs ({b_val}) exceed critical limit of {int(th['academic_backlogs_critical'])}")
+        elif b_val > 0:
+            review_reasons.append(f"Student has {b_val} active backlog requiring remedial action")
+
+    # Attendance evaluation
+    if has_att:
+        att_val = float(att)
+        if att_val < th["academic_attendance_critical"]:
+            critical_reasons.append(f"Attendance ({att_val:.1f}%) is critically below mandatory {th['academic_attendance_critical']}%")
+        elif att_val < th["academic_attendance_warning"]:
+            review_reasons.append(f"Attendance ({att_val:.1f}%) is below recommended {th['academic_attendance_warning']}% guideline")
+
+    # Composite academic score
+    if has_acad:
+        acad_val = float(acad_score)
+        if acad_val < th["academic_score_critical"]:
+            critical_reasons.append(f"Composite Academic Pillar score ({acad_val:.1f}/100) is in critical zone")
+        elif acad_val < th["academic_score_warning"]:
+            review_reasons.append(f"Composite Academic Pillar score ({acad_val:.1f}/100) requires monitoring")
+
+    if critical_reasons:
+        return "Support recommended", critical_reasons
+    elif review_reasons:
+        return "Needs review", review_reasons
     else:
-        status = "On Track"
-        if not factors:
-            factors.append("All available academic indicators meet thresholds")
-
-    return {
-        "status": status,
-        "factors": factors,
-        "indicator_details": indicator_details,
-        "indicators_available": indicators_available,
-    }
+        return "On track", ["Academic metrics and attendance meet or exceed benchmark standards."]
 
 
-# ---------- Placement Support Assessment ----------
-
-def assess_placement_support(row: pd.Series) -> dict:
+def assess_student_placement_risk(
+    row: pd.Series,
+    thresholds: Optional[Dict[str, float]] = None
+) -> Tuple[str, List[str]]:
+    """Evaluate placement readiness support independently based on transparent rules.
+    
+    Returns:
+    - status: 'Support recommended' | 'Needs review' | 'On track' | 'Insufficient data'
+    - reasons: list of explanatory factor strings
     """
-    Assess placement support needs for a single student.
+    th = thresholds or DEFAULT_RISK_THRESHOLDS
 
-    Returns dict with:
-    - status: str — "On Track", "Needs Review", "Support Recommended", "Insufficient Data"
-    - factors: list[str] — specific reasons for the status
-    - indicator_details: dict — individual indicator assessments
-    """
-    factors = []
-    indicator_details = {}
-    indicators_available = 0
-    concerns = 0
-    borderline = 0
+    apt = row.get("aptitude_score")
+    mock = row.get("mock_interview_score")
+    coding = row.get("coding_score")
+    place_score = row.get("pillar_placement")
 
-    placement_checks = [
-        ("aptitude_score", "Aptitude", "aptitude"),
-        ("coding_score", "Coding", "coding"),
-        ("communication_score", "Communication", "communication"),
-        ("mock_interview_score", "Mock Interview", "mock_interview"),
-    ]
+    has_apt = not pd.isna(apt)
+    has_mock = not pd.isna(mock)
+    has_coding = not pd.isna(coding)
+    has_place = not pd.isna(place_score)
 
-    for col, label, key in placement_checks:
-        val = row.get(col)
-        if pd.notna(val):
-            indicators_available += 1
-            val = float(val)
-            low_thresh = PLACEMENT_THRESHOLDS[f"{key}_low"]
-            border_thresh = PLACEMENT_THRESHOLDS[f"{key}_borderline"]
+    if not has_apt and not has_mock and not has_coding and not has_place:
+        return "Insufficient data", ["No placement assessments, mock interview, or coding test data found."]
 
-            if val < low_thresh:
-                concerns += 1
-                factors.append(f"{label} score ({val:.1f}) below {low_thresh} threshold")
-                indicator_details[key] = "Low"
-            elif val < border_thresh:
-                borderline += 1
-                factors.append(f"{label} score ({val:.1f}) borderline (below {border_thresh})")
-                indicator_details[key] = "Borderline"
-            else:
-                indicator_details[key] = "On Track"
+    critical_reasons: List[str] = []
+    review_reasons: List[str] = []
 
-    # Determine overall status
-    if indicators_available == 0:
-        status = "Insufficient Data"
-        factors.append("No placement assessment data available")
-    elif concerns >= 2:
-        status = "Support Recommended"
-    elif concerns >= 1 or borderline >= 2:
-        status = "Needs Review"
+    # Aptitude evaluation
+    if has_apt:
+        apt_val = float(apt)
+        if apt_val < th["placement_aptitude_critical"]:
+            critical_reasons.append(f"Aptitude test score ({apt_val:.1f}%) is below readiness threshold {th['placement_aptitude_critical']}%")
+        elif apt_val < th["placement_aptitude_warning"]:
+            review_reasons.append(f"Aptitude test score ({apt_val:.1f}%) is below competitive benchmark {th['placement_aptitude_warning']}%")
+
+    # Mock Interview evaluation
+    if has_mock:
+        mock_val = float(mock)
+        if mock_val < th["placement_interview_critical"]:
+            critical_reasons.append(f"Mock interview performance ({mock_val:.1f}%) needs intensive coaching (<{th['placement_interview_critical']}%)")
+        elif mock_val < th["placement_interview_warning"]:
+            review_reasons.append(f"Mock interview performance ({mock_val:.1f}%) is below target {th['placement_interview_warning']}%")
+
+    # Coding skills evaluation
+    if has_coding:
+        code_val = float(coding)
+        if code_val < th["placement_coding_critical"]:
+            critical_reasons.append(f"Coding test score ({code_val:.1f}%) indicates critical hands-on gaps (<{th['placement_coding_critical']}%)")
+        elif code_val < th["placement_coding_warning"]:
+            review_reasons.append(f"Coding test score ({code_val:.1f}%) needs further practice (<{th['placement_coding_warning']}%)")
+
+    # Composite placement pillar
+    if has_place:
+        place_val = float(place_score)
+        if place_val < th["placement_score_critical"]:
+            critical_reasons.append(f"Overall Placement Pillar score ({place_val:.1f}/100) indicates significant risk")
+        elif place_val < th["placement_score_warning"]:
+            review_reasons.append(f"Overall Placement Pillar score ({place_val:.1f}/100) shows room for improvement")
+
+    if critical_reasons:
+        return "Support recommended", critical_reasons
+    elif review_reasons:
+        return "Needs review", review_reasons
     else:
-        status = "On Track"
-        if not factors:
-            factors.append("All available placement indicators meet thresholds")
-
-    return {
-        "status": status,
-        "factors": factors,
-        "indicator_details": indicator_details,
-        "indicators_available": indicators_available,
-    }
+        return "On track", ["Placement readiness benchmarks and technical assessments are on target."]
 
 
-# ---------- Batch Assessment ----------
+def compute_dataset_risks(
+    df: pd.DataFrame,
+    thresholds: Optional[Dict[str, float]] = None
+) -> pd.DataFrame:
+    """Compute independent academic and placement risk statuses and detailed reasons for all students."""
+    res_df = df.copy()
 
-def assess_all_students(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Assess both academic and placement support needs for all students.
+    acad_statuses = []
+    acad_reasons_list = []
+    place_statuses = []
+    place_reasons_list = []
+    combined_flags = []
 
-    Adds columns:
-    - academic_support_status
-    - academic_support_factors (JSON string)
-    - placement_support_status
-    - placement_support_factors (JSON string)
-    """
-    if df.empty:
-        return df.copy()
+    for _, row in res_df.iterrows():
+        a_status, a_reasons = assess_student_academic_risk(row, thresholds)
+        p_status, p_reasons = assess_student_placement_risk(row, thresholds)
 
-    academic_results = df.apply(assess_academic_support, axis=1)
-    placement_results = df.apply(assess_placement_support, axis=1)
+        acad_statuses.append(a_status)
+        acad_reasons_list.append("; ".join(a_reasons))
+        place_statuses.append(p_status)
+        place_reasons_list.append("; ".join(p_reasons))
 
-    result_df = df.copy()
-    result_df["academic_support_status"] = [r["status"] for r in academic_results]
-    result_df["academic_support_factors"] = ["; ".join(r["factors"]) for r in academic_results]
-    result_df["placement_support_status"] = [r["status"] for r in placement_results]
-    result_df["placement_support_factors"] = ["; ".join(r["factors"]) for r in placement_results]
+        # Overall combined support priority flag
+        if a_status == "Insufficient data" and p_status == "Insufficient data":
+            comb = "Insufficient Data"
+        elif a_status == "Support recommended" and p_status == "Support recommended":
+            comb = "Dual Support Needed"
+        elif a_status == "Support recommended":
+            comb = "Academic Support Priority"
+        elif p_status == "Support recommended":
+            comb = "Placement Support Priority"
+        elif a_status == "Needs review" or p_status == "Needs review":
+            comb = "Review Recommended"
+        else:
+            comb = "On Track"
 
-    return result_df
+        combined_flags.append(comb)
 
+    res_df["academic_risk_status"] = acad_statuses
+    res_df["academic_risk_reasons"] = acad_reasons_list
+    res_df["placement_risk_status"] = place_statuses
+    res_df["placement_risk_reasons"] = place_reasons_list
+    res_df["overall_support_flag"] = combined_flags
 
-def get_risk_summary(df: pd.DataFrame) -> dict:
-    """
-    Get summary counts of support statuses.
-    """
-    summary = {
-        "academic": {},
-        "placement": {},
-    }
-
-    if "academic_support_status" in df.columns:
-        summary["academic"] = df["academic_support_status"].value_counts().to_dict()
-
-    if "placement_support_status" in df.columns:
-        summary["placement"] = df["placement_support_status"].value_counts().to_dict()
-
-    return summary
+    return res_df

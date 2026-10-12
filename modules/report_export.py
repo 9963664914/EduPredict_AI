@@ -1,158 +1,96 @@
-"""
-report_export.py — CSV export and methodology summary generation.
+"""Data export, reporting, and methodology documentation generator.
 
-Provides filtered, downloadable CSV exports and a methodology report
-documenting scoring assumptions and limitations.
+EduPredict AI - byteXL HacXLerate 2026 (Problem Statement 4 by KPMG in India)
 """
 
-import pandas as pd
 import io
-from typing import Optional
-from modules.scoring import DEFAULT_WEIGHTS, INDICATOR_LABELS
+from typing import Dict, List, Optional, Any
+import numpy as np
+import pandas as pd
 
 
-# ---------- CSV Exports ----------
+METHODOLOGY_SUMMARY = """# EduPredict AI — Methodology, Assumptions & Limitations
 
-def export_unified_data(df: pd.DataFrame) -> str:
-    """Export the unified student dataset as CSV string."""
-    # Select available core columns
-    core_cols = [
-        "student_id", "student_name", "department", "semester", "email",
-        "avg_total_marks", "attendance_percentage",
-        "assignment_completion_rate", "average_assignment_score",
-        "aptitude_score", "coding_score", "communication_score", "mock_interview_score",
-        "avg_proficiency", "skill_count",
-        "satisfaction_rating", "peer_collaboration_score",
-    ]
-    available_cols = [c for c in core_cols if c in df.columns]
-    return df[available_cols].to_csv(index=False)
+### 1. Prototype Scope & Nature
+EduPredict AI is an exploratory diagnostic tool built for byteXL HacXLerate 2026 (Problem Statement 4 by KPMG in India).
+The **Student Success Score** and **Risk Support Indicators** are **transparent heuristic indicator metrics**, NOT validated predictive statistical models of academic failure or job placement outcomes. All insights require qualified human review by faculty advisors, department heads, and training & placement officers.
+
+### 2. Indicator Pillars & Configurable Weights
+The overall score (0–100) integrates 6 pillars with baseline weights:
+- **Academic Performance (25%)**: Normalized CGPA (70%) + Internal Exam Average (30%) with explicit deduction (-5 pts/backlog).
+- **Attendance (20%)**: Classroom Attendance (70%) + Practical Lab Attendance (30%).
+- **LMS Engagement (15%)**: Assignment Submission Rate (70%) + Video Lecture Completion (30%).
+- **Placement Readiness (20%)**: Quantitative Aptitude (50%) + Mock Technical/HR Interview (50%).
+- **Skills Assessment (10%)**: Hands-on Coding Assessment (60%) + Technical MCQ (40%) + Certified Skills Bonus.
+- **Engagement & Feedback (10%)**: Faculty Mentor Rating (50%) + Club Activities (25%) + Feedback Sentiment (25%).
+
+### 3. Missing Data & Dynamic Weight Re-normalization
+When a student has missing data for one or more pillars:
+1. Available valid pillars are identified.
+2. The prototype weights of the valid pillars are dynamically re-normalized so that their sum equals exactly 100%.
+3. Data completeness percentage is computed and displayed alongside the score.
+4. **Zero-filling prohibition**: Missing data is NEVER silently replaced with zero.
+5. If **no valid indicators exist**, the score is marked as `Unavailable` (`NaN`), never zero.
+
+### 4. Independent Academic & Placement Risk Evaluation
+Academic support and Placement readiness are evaluated independently:
+- **On track**: Key benchmarks met or exceeded.
+- **Needs review**: Metrics borderline or slight downward trend detected.
+- **Support recommended**: Severe attendance shortage, backlogs, low CGPA, or aptitude gaps.
+- **Insufficient data**: Inadequate data available to reach a sound diagnostic conclusion.
+
+### 5. Responsible AI, Privacy & Human-in-the-Loop Ethics
+- **No Autonomous High-Stakes Actions**: Support flags are advisory triggers for counseling and mentorship, not disciplinary actions or automated disqualifications.
+- **Data Privacy**: Student records must be secured, access-controlled, and audited in compliance with institutional guidelines and DPDP Act regulations.
+- **Explainability**: Every flag provides exact factor reasons and practical remedial actions.
+"""
 
 
-def export_scores(df: pd.DataFrame) -> str:
-    """Export student scores with explanations as CSV string."""
-    score_cols = [
-        "student_id", "student_name", "department",
-        "success_score", "data_completeness", "available_indicators",
-        "strongest_indicator", "weakest_indicator",
-    ]
-    # Add individual indicator scores if present
-    indicator_cols = [c for c in df.columns if c.endswith("_score_calc")]
-    contribution_cols = [c for c in df.columns if c.endswith("_contribution")]
-
-    available_cols = [c for c in score_cols + indicator_cols + contribution_cols if c in df.columns]
-    return df[available_cols].to_csv(index=False)
+def export_dataframe_to_csv(df: pd.DataFrame) -> bytes:
+    """Convert DataFrame to UTF-8 encoded CSV bytes for download."""
+    return df.to_csv(index=False).encode("utf-8")
 
 
-def export_academic_support(df: pd.DataFrame, status_filter: Optional[list[str]] = None) -> str:
-    """Export filtered academic support list as CSV."""
+def get_academic_support_export(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter and prepare student records recommended for academic support."""
+    if "academic_risk_status" not in df.columns:
+        return pd.DataFrame()
+
+    sub = df[df["academic_risk_status"].isin(["Support recommended", "Needs review"])].copy()
     cols = [
-        "student_id", "student_name", "department", "semester",
-        "avg_total_marks", "attendance_percentage", "assignment_completion_rate",
-        "success_score", "academic_support_status", "academic_support_factors",
+        c for c in [
+            "student_id", "name", "department", "semester", "cgpa", "backlogs",
+            "attendance_pct", "success_score", "academic_risk_status", "academic_risk_reasons"
+        ] if c in sub.columns
     ]
-    available_cols = [c for c in cols if c in df.columns]
-    export_df = df[available_cols].copy()
-
-    if status_filter and "academic_support_status" in export_df.columns:
-        export_df = export_df[export_df["academic_support_status"].isin(status_filter)]
-
-    return export_df.to_csv(index=False)
+    return sub[cols].sort_values(by="cgpa", ascending=True) if "cgpa" in sub.columns else sub[cols]
 
 
-def export_placement_support(df: pd.DataFrame, status_filter: Optional[list[str]] = None) -> str:
-    """Export filtered placement support list as CSV."""
+def get_placement_support_export(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter and prepare student records recommended for placement readiness support."""
+    if "placement_risk_status" not in df.columns:
+        return pd.DataFrame()
+
+    sub = df[df["placement_risk_status"].isin(["Support recommended", "Needs review"])].copy()
     cols = [
-        "student_id", "student_name", "department", "semester",
-        "aptitude_score", "coding_score", "communication_score", "mock_interview_score",
-        "success_score", "placement_support_status", "placement_support_factors",
+        c for c in [
+            "student_id", "name", "department", "semester", "aptitude_score",
+            "mock_interview_score", "coding_score", "success_score",
+            "placement_risk_status", "placement_risk_reasons"
+        ] if c in sub.columns
     ]
-    available_cols = [c for c in cols if c in df.columns]
-    export_df = df[available_cols].copy()
-
-    if status_filter and "placement_support_status" in export_df.columns:
-        export_df = export_df[export_df["placement_support_status"].isin(status_filter)]
-
-    return export_df.to_csv(index=False)
+    return sub[cols].sort_values(by="aptitude_score", ascending=True) if "aptitude_score" in sub.columns else sub[cols]
 
 
-# ---------- Methodology Report ----------
-
-def generate_methodology_report(df: pd.DataFrame) -> str:
-    """
-    Generate a text summary of the scoring methodology, data completeness,
-    assumptions, and limitations.
-    """
-    lines = []
-    lines.append("=" * 60)
-    lines.append("EDUPREDICT AI — METHODOLOGY & LIMITATIONS REPORT")
-    lines.append("=" * 60)
-    lines.append("")
-
-    # Scoring methodology
-    lines.append("## STUDENT SUCCESS SCORE METHODOLOGY")
-    lines.append("")
-    lines.append("The Student Success Score is a PROTOTYPE composite indicator")
-    lines.append("calculated as a weighted average of normalized student metrics.")
-    lines.append("It is NOT a validated predictive model.")
-    lines.append("")
-    lines.append("Default Weights:")
-    for key, weight in DEFAULT_WEIGHTS.items():
-        label = INDICATOR_LABELS.get(key, key)
-        lines.append(f"  - {label}: {weight:.0%}")
-    lines.append("")
-    lines.append("Normalization:")
-    lines.append("  - All indicators are normalized to a 0-100 scale")
-    lines.append("  - When data is missing, weights of available indicators")
-    lines.append("    are re-normalized (proportional redistribution)")
-    lines.append("  - If NO indicators are available, score is 'Unavailable' (not 0)")
-    lines.append("")
-
-    # Risk assessment
-    lines.append("## SUPPORT STATUS RULES")
-    lines.append("")
-    lines.append("Academic Support thresholds:")
-    lines.append("  - Marks below 45%: Support concern")
-    lines.append("  - Marks below 60%: Needs review")
-    lines.append("  - Attendance below 65%: Support concern")
-    lines.append("  - Attendance below 75%: Needs review")
-    lines.append("  - Assignment completion below 50%: Support concern")
-    lines.append("  - 2+ concerns → 'Support Recommended'")
-    lines.append("  - 1 concern or 2+ borderline → 'Needs Review'")
-    lines.append("")
-    lines.append("Placement Support thresholds:")
-    lines.append("  - Aptitude/Communication below 45: Support concern")
-    lines.append("  - Coding/Mock Interview below 40: Support concern")
-    lines.append("  - 2+ concerns → 'Support Recommended'")
-    lines.append("")
-
-    # Data completeness
-    if not df.empty:
-        lines.append("## DATA COMPLETENESS")
-        lines.append(f"  Total students: {len(df)}")
-
-        if "data_completeness" in df.columns:
-            avg_comp = df["data_completeness"].mean()
-            lines.append(f"  Average data completeness: {avg_comp:.1f}%")
-            full_data = (df["data_completeness"] == 100).sum()
-            lines.append(f"  Students with 100% data: {full_data}")
-
-        if "success_score" in df.columns:
-            scored = df["success_score"].notna().sum()
-            lines.append(f"  Students with calculable score: {scored}")
-        lines.append("")
-
-    # Assumptions and limitations
-    lines.append("## ASSUMPTIONS & LIMITATIONS")
-    lines.append("")
-    lines.append("1. This is a PROTOTYPE for hackathon demonstration only.")
-    lines.append("2. Thresholds are configurable defaults, not validated cutoffs.")
-    lines.append("3. Support labels indicate areas worth reviewing — they are")
-    lines.append("   NOT predictions of academic failure or placement outcomes.")
-    lines.append("4. Missing data affects score accuracy — always check")
-    lines.append("   data completeness before acting on scores.")
-    lines.append("5. Human review is essential before any intervention.")
-    lines.append("6. Student data privacy must be respected at all times.")
-    lines.append("7. Scores should not be used as sole basis for decisions.")
-    lines.append("")
-
-    return "\n".join(lines)
+def get_comprehensive_export(df: pd.DataFrame) -> pd.DataFrame:
+    """Export comprehensive student dataset with all calculated scores and explanations."""
+    export_cols = [
+        "student_id", "name", "department", "semester", "gender",
+        "cgpa", "backlogs", "attendance_pct",
+        "lms_assignment_completion_pct", "aptitude_score", "mock_interview_score",
+        "coding_score", "mentor_rating", "data_completeness_pct",
+        "success_score", "academic_risk_status", "placement_risk_status",
+        "overall_support_flag", "student_segment", "strongest_pillar", "weakest_pillar"
+    ]
+    avail_cols = [c for c in export_cols if c in df.columns]
+    return df[avail_cols]

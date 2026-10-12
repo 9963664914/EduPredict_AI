@@ -1,330 +1,337 @@
-"""
-scoring.py — Student Success Score calculation engine.
+"""Student Success Score calculation engine with dynamic weight renormalization.
 
-Calculates a composite Student Success Score (0–100) using configurable,
-weighted indicators. When data is missing, weights are dynamically
-re-normalized across available indicators.
-
-IMPORTANT: The Student Success Score is a prototype indicator for hackathon
-demonstration purposes. It is NOT a validated predictive model and should
-not be used as the sole basis for academic or placement decisions.
-
-Design decisions:
-- Scoring logic is completely separated from UI code
-- All indicator normalization documented with assumptions
-- Missing data results in weight re-normalization, not zero substitution
-- If no valid indicators exist, score is None (unavailable), not 0
-- Each indicator's contribution is transparent and explainable
+EduPredict AI - byteXL HacXLerate 2026 (Problem Statement 4 by KPMG in India)
 """
 
-import pandas as pd
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
-from typing import Optional
+import pandas as pd
 
 
-# ---------- Default Weights (configurable) ----------
-
+# Default baseline prototype weights (sum to 1.0)
 DEFAULT_WEIGHTS = {
-    "academic": 0.25,      # 25% — Academic performance
-    "attendance": 0.20,    # 20% — Attendance regularity
-    "lms": 0.15,           # 15% — LMS and assignment completion
-    "placement": 0.20,     # 20% — Placement readiness
-    "skills": 0.10,        # 10% — Skills assessment
-    "engagement": 0.10,    # 10% — Engagement and feedback
+    "academic_performance": 0.25,
+    "attendance": 0.20,
+    "lms_completion": 0.15,
+    "placement_readiness": 0.20,
+    "skills_assessment": 0.10,
+    "engagement_feedback": 0.10,
 }
 
 
-# ---------- Indicator Extraction ----------
-
-def extract_academic_score(row: pd.Series) -> Optional[float]:
+def normalize_academic_pillar(row: pd.Series) -> Optional[float]:
+    """Normalize academic performance to a 0-100 scale.
+    
+    Formula:
+    - Base score combines CGPA (scaled to 100) and internal test percentage.
+    - If both available: 70% CGPA + 30% internal test.
+    - Backlogs apply a transparent penalty of 5 points per backlog.
+    - Result clamped between 0 and 100.
     """
-    Extract academic indicator (0–100 scale).
-    Uses avg_total_marks directly (already 0–100).
-    """
-    val = row.get("avg_total_marks")
-    if pd.isna(val):
-        return None
-    return float(np.clip(val, 0, 100))
+    cgpa = row.get("cgpa")
+    internal = row.get("internal_test_pct")
+    backlogs = row.get("backlogs", 0)
+    if pd.isna(backlogs):
+        backlogs = 0
 
+    has_cgpa = not pd.isna(cgpa)
+    has_internal = not pd.isna(internal)
 
-def extract_attendance_score(row: pd.Series) -> Optional[float]:
-    """
-    Extract attendance indicator (0–100 scale).
-    Uses attendance_percentage directly.
-    """
-    val = row.get("attendance_percentage")
-    if pd.isna(val):
-        return None
-    return float(np.clip(val, 0, 100))
-
-
-def extract_lms_score(row: pd.Series) -> Optional[float]:
-    """
-    Extract LMS indicator (0–100 scale).
-    Combines assignment completion rate (60%) and average assignment score (40%).
-    If only one is available, uses that alone.
-    """
-    completion = row.get("assignment_completion_rate")
-    avg_score = row.get("average_assignment_score")
-
-    has_completion = pd.notna(completion)
-    has_score = pd.notna(avg_score)
-
-    if not has_completion and not has_score:
+    if not has_cgpa and not has_internal:
         return None
 
-    if has_completion and has_score:
-        return float(np.clip(completion, 0, 100)) * 0.6 + float(np.clip(avg_score, 0, 100)) * 0.4
-    elif has_completion:
-        return float(np.clip(completion, 0, 100))
+    if has_cgpa and has_internal:
+        base = (float(cgpa) * 10.0 * 0.70) + (float(internal) * 0.30)
+    elif has_cgpa:
+        base = float(cgpa) * 10.0
     else:
-        return float(np.clip(avg_score, 0, 100))
+        base = float(internal)
+
+    penalty = float(backlogs) * 5.0
+    score = max(0.0, min(100.0, base - penalty))
+    return round(score, 1)
 
 
-def extract_placement_score(row: pd.Series) -> Optional[float]:
+def normalize_attendance_pillar(row: pd.Series) -> Optional[float]:
+    """Normalize attendance to a 0-100 scale.
+    
+    Combines general attendance (70%) and practical lab attendance (30%) if both exist.
     """
-    Extract placement readiness indicator (0–100 scale).
-    Average of available placement sub-scores (aptitude, coding, communication, mock interview).
-    """
-    cols = ["aptitude_score", "coding_score", "communication_score", "mock_interview_score"]
-    values = []
-    for col in cols:
-        val = row.get(col)
-        if pd.notna(val):
-            values.append(float(np.clip(val, 0, 100)))
+    att = row.get("attendance_pct")
+    lab = row.get("lab_attendance_pct")
 
-    if not values:
-        return None
-    return sum(values) / len(values)
+    has_att = not pd.isna(att)
+    has_lab = not pd.isna(lab)
 
-
-def extract_skills_score(row: pd.Series) -> Optional[float]:
-    """
-    Extract skills indicator (0–100 scale).
-    Normalizes avg_proficiency from 1–10 scale to 0–100.
-    """
-    val = row.get("avg_proficiency")
-    if pd.isna(val):
-        return None
-    # Normalize 1–10 → 0–100
-    normalized = (float(np.clip(val, 1, 10)) - 1) / 9 * 100
-    return normalized
-
-
-def extract_engagement_score(row: pd.Series) -> Optional[float]:
-    """
-    Extract engagement indicator (0–100 scale).
-    Combines satisfaction_rating (50%) and peer_collaboration_score (50%),
-    each normalized from 1–10 to 0–100.
-    """
-    satisfaction = row.get("satisfaction_rating")
-    collaboration = row.get("peer_collaboration_score")
-
-    has_sat = pd.notna(satisfaction)
-    has_collab = pd.notna(collaboration)
-
-    if not has_sat and not has_collab:
+    if not has_att and not has_lab:
         return None
 
-    def normalize_10(v):
-        return (float(np.clip(v, 1, 10)) - 1) / 9 * 100
-
-    if has_sat and has_collab:
-        return normalize_10(satisfaction) * 0.5 + normalize_10(collaboration) * 0.5
-    elif has_sat:
-        return normalize_10(satisfaction)
+    if has_att and has_lab:
+        score = (float(att) * 0.70) + (float(lab) * 0.30)
+    elif has_att:
+        score = float(att)
     else:
-        return normalize_10(collaboration)
+        score = float(lab)
+
+    return round(float(np.clip(score, 0.0, 100.0)), 1)
 
 
-# Map indicator names to extraction functions
-INDICATOR_EXTRACTORS = {
-    "academic": extract_academic_score,
-    "attendance": extract_attendance_score,
-    "lms": extract_lms_score,
-    "placement": extract_placement_score,
-    "skills": extract_skills_score,
-    "engagement": extract_engagement_score,
-}
-
-INDICATOR_LABELS = {
-    "academic": "Academic Performance",
-    "attendance": "Attendance",
-    "lms": "LMS & Assignments",
-    "placement": "Placement Readiness",
-    "skills": "Skills Assessment",
-    "engagement": "Engagement & Feedback",
-}
-
-
-# ---------- Score Calculation ----------
-
-def calculate_student_score(
-    row: pd.Series,
-    weights: Optional[dict[str, float]] = None,
-) -> dict:
+def normalize_lms_pillar(row: pd.Series) -> Optional[float]:
+    """Normalize LMS and digital assignment completion to 0-100 scale.
+    
+    Assignment completion (70%) + video watch completion (30%).
     """
-    Calculate Student Success Score for a single student.
+    assign = row.get("lms_assignment_completion_pct")
+    video = row.get("lms_video_watch_pct")
 
-    Returns a dict with:
-    - score: float (0–100) or None if no valid indicators
-    - indicators: dict of indicator_name → value (0–100 or None)
-    - effective_weights: dict of indicator_name → weight used (after normalization)
-    - data_completeness: float (0–100), percentage of indicators with data
-    - available_count: int, number of indicators with data
-    - total_count: int, total number of indicators
-    - strongest: str or None, name of strongest indicator
-    - weakest: str or None, name of weakest indicator
-    - contributions: dict of indicator_name → weighted contribution to score
+    has_assign = not pd.isna(assign)
+    has_video = not pd.isna(video)
+
+    if not has_assign and not has_video:
+        return None
+
+    if has_assign and has_video:
+        score = (float(assign) * 0.70) + (float(video) * 0.30)
+    elif has_assign:
+        score = float(assign)
+    else:
+        score = float(video)
+
+    return round(float(np.clip(score, 0.0, 100.0)), 1)
+
+
+def normalize_placement_pillar(row: pd.Series) -> Optional[float]:
+    """Normalize placement readiness to 0-100 scale.
+    
+    Combines aptitude score (50%) and mock interview score (50%).
     """
-    if weights is None:
-        weights = DEFAULT_WEIGHTS.copy()
+    apt = row.get("aptitude_score")
+    mock = row.get("mock_interview_score")
 
-    # Extract all indicators
-    indicators = {}
-    for name, extractor in INDICATOR_EXTRACTORS.items():
-        indicators[name] = extractor(row)
+    has_apt = not pd.isna(apt)
+    has_mock = not pd.isna(mock)
 
-    # Determine available indicators
-    available = {k: v for k, v in indicators.items() if v is not None}
-    available_count = len(available)
-    total_count = len(INDICATOR_EXTRACTORS)
+    if not has_apt and not has_mock:
+        return None
 
-    # Data completeness
-    data_completeness = round(available_count / total_count * 100, 1) if total_count > 0 else 0.0
+    if has_apt and has_mock:
+        score = (float(apt) * 0.50) + (float(mock) * 0.50)
+    elif has_apt:
+        score = float(apt)
+    else:
+        score = float(mock)
 
-    # If no valid indicators, score is unavailable
-    if available_count == 0:
-        return {
-            "score": None,
-            "indicators": indicators,
-            "effective_weights": {k: 0.0 for k in weights},
-            "data_completeness": 0.0,
-            "available_count": 0,
-            "total_count": total_count,
-            "strongest": None,
-            "weakest": None,
-            "contributions": {k: 0.0 for k in weights},
-        }
+    return round(float(np.clip(score, 0.0, 100.0)), 1)
 
-    # Re-normalize weights for available indicators only
-    available_weight_sum = sum(weights.get(k, 0) for k in available)
-    effective_weights = {}
-    for k in weights:
-        if k in available and available_weight_sum > 0:
-            effective_weights[k] = round(weights[k] / available_weight_sum, 4)
-        else:
-            effective_weights[k] = 0.0
 
-    # Calculate weighted score
-    contributions = {}
-    score = 0.0
-    for k, v in available.items():
-        w = effective_weights.get(k, 0)
-        contrib = v * w
-        contributions[k] = round(contrib, 2)
-        score += contrib
+def normalize_skills_pillar(row: pd.Series) -> Optional[float]:
+    """Normalize technical skills assessment to 0-100 scale.
+    
+    Coding score (60%) + Technical MCQ (40%) + minor bonus for verified certifications (up to 6 pts).
+    """
+    coding = row.get("coding_score")
+    mcq = row.get("technical_mcq_score")
+    certs = row.get("certifications_count", 0)
+    if pd.isna(certs):
+        certs = 0
 
-    # For unavailable indicators, contribution is 0
-    for k in weights:
-        if k not in available:
-            contributions[k] = 0.0
+    has_coding = not pd.isna(coding)
+    has_mcq = not pd.isna(mcq)
 
-    score = round(float(np.clip(score, 0, 100)), 1)
+    if not has_coding and not has_mcq:
+        return None
 
-    # Strongest and weakest
-    strongest = max(available, key=lambda k: available[k]) if available else None
-    weakest = min(available, key=lambda k: available[k]) if available else None
+    if has_coding and has_mcq:
+        base = (float(coding) * 0.60) + (float(mcq) * 0.40)
+    elif has_coding:
+        base = float(coding)
+    else:
+        base = float(mcq)
 
+    bonus = min(6.0, float(certs) * 2.0)
+    score = max(0.0, min(100.0, base + bonus))
+    return round(score, 1)
+
+
+def normalize_engagement_pillar(row: pd.Series) -> Optional[float]:
+    """Normalize engagement and feedback to 0-100 scale.
+    
+    Mentor rating (1-5 normalized to 100; 50%), club participation (25%), feedback sentiment (25%).
+    """
+    mentor = row.get("mentor_rating")
+    club = row.get("club_participation_score")
+    sentiment = row.get("feedback_sentiment_pct")
+
+    parts = []
+    weights = []
+
+    if not pd.isna(mentor):
+        # Scale 1-5 to 0-100: (rating / 5.0) * 100
+        mentor_norm = (float(mentor) / 5.0) * 100.0
+        parts.append(mentor_norm)
+        weights.append(0.50)
+
+    if not pd.isna(club):
+        parts.append(float(club))
+        weights.append(0.25)
+
+    if not pd.isna(sentiment):
+        parts.append(float(sentiment))
+        weights.append(0.25)
+
+    if not parts:
+        return None
+
+    norm_w = [w / sum(weights) for w in weights]
+    score = sum(p * w for p, w in zip(parts, norm_w))
+    return round(float(np.clip(score, 0.0, 100.0)), 1)
+
+
+def extract_student_pillars(row: pd.Series) -> Dict[str, Optional[float]]:
+    """Extract and normalize all 6 indicator pillars for a single student row."""
     return {
-        "score": score,
-        "indicators": indicators,
-        "effective_weights": effective_weights,
-        "data_completeness": data_completeness,
-        "available_count": available_count,
-        "total_count": total_count,
-        "strongest": strongest,
-        "weakest": weakest,
-        "contributions": contributions,
+        "academic_performance": normalize_academic_pillar(row),
+        "attendance": normalize_attendance_pillar(row),
+        "lms_completion": normalize_lms_pillar(row),
+        "placement_readiness": normalize_placement_pillar(row),
+        "skills_assessment": normalize_skills_pillar(row),
+        "engagement_feedback": normalize_engagement_pillar(row),
     }
 
 
-def calculate_all_scores(
+def calculate_student_score(
+    row: pd.Series,
+    weights: Optional[Dict[str, float]] = None
+) -> Dict[str, Any]:
+    """Calculate the transparent Student Success Score with dynamic weight re-normalization.
+    
+    Returns a dict with:
+    - score: float (0-100) or np.nan if no valid indicators
+    - completeness_pct: float
+    - valid_pillars_count: int
+    - pillars: dict of pillar values (or None)
+    - effective_weights: dict of actual redistributed weights used
+    - strongest_pillar: str or None
+    - weakest_pillar: str or None
+    - calculation_steps: detailed human-readable step-by-step breakdown
+    """
+    cfg_weights = weights or DEFAULT_WEIGHTS
+    pillars = extract_student_pillars(row)
+
+    valid_pillars = {k: v for k, v in pillars.items() if v is not None}
+    valid_count = len(valid_pillars)
+    completeness_pct = round((valid_count / len(DEFAULT_WEIGHTS)) * 100.0, 1)
+
+    # If NO valid indicators exist, return NaN - NEVER invent or default to 0!
+    if valid_count == 0:
+        return {
+            "score": np.nan,
+            "completeness_pct": 0.0,
+            "valid_pillars_count": 0,
+            "pillars": pillars,
+            "effective_weights": {k: 0.0 for k in DEFAULT_WEIGHTS},
+            "strongest_pillar": None,
+            "weakest_pillar": None,
+            "calculation_steps": "No valid indicator data found for this student. Score unavailable.",
+        }
+
+    # Re-normalize weights among valid pillars so their sum equals 1.0 (100%)
+    valid_weight_sum = sum(cfg_weights[k] for k in valid_pillars)
+    if valid_weight_sum <= 0:
+        # Fallback to equal weighting among valid pillars
+        effective_weights = {k: 1.0 / valid_count for k in valid_pillars}
+    else:
+        effective_weights = {
+            k: cfg_weights[k] / valid_weight_sum for k in valid_pillars
+        }
+
+    # Complete effective weights dict including 0.0 for missing
+    all_effective_weights = {
+        k: round(effective_weights.get(k, 0.0), 4) for k in DEFAULT_WEIGHTS
+    }
+
+    # Compute weighted sum
+    composite_score = sum(valid_pillars[k] * effective_weights[k] for k in valid_pillars)
+    composite_score = round(float(np.clip(composite_score, 0.0, 100.0)), 1)
+
+    # Identify strongest and weakest indicators
+    sorted_pillars = sorted(valid_pillars.items(), key=lambda item: item[1])
+    weakest_pillar = sorted_pillars[0][0] if sorted_pillars else None
+    strongest_pillar = sorted_pillars[-1][0] if sorted_pillars else None
+
+    # Step-by-step explanation string
+    steps = [
+        f"Valid Indicators: {valid_count}/{len(DEFAULT_WEIGHTS)} ({completeness_pct}% complete)",
+        "Weighted contributions:"
+    ]
+    for k, v in valid_pillars.items():
+        w = effective_weights[k]
+        contrib = v * w
+        steps.append(f"  • {k.replace('_', ' ').title()}: {v:.1f} × {w*100:.1f}% = {contrib:.2f}")
+
+    if valid_count < len(DEFAULT_WEIGHTS):
+        missing_names = [k.replace('_', ' ').title() for k, v in pillars.items() if v is None]
+        steps.append(f"Missing indicators ({', '.join(missing_names)}) were excluded; weights were re-normalized.")
+
+    steps.append(f"Final Success Score = {composite_score:.1f} / 100.0")
+
+    return {
+        "score": composite_score,
+        "completeness_pct": completeness_pct,
+        "valid_pillars_count": valid_count,
+        "pillars": pillars,
+        "effective_weights": all_effective_weights,
+        "strongest_pillar": strongest_pillar,
+        "weakest_pillar": weakest_pillar,
+        "calculation_steps": "\n".join(steps),
+    }
+
+
+def compute_dataset_scores(
     df: pd.DataFrame,
-    weights: Optional[dict[str, float]] = None,
+    weights: Optional[Dict[str, float]] = None
 ) -> pd.DataFrame:
-    """
-    Calculate Student Success Scores for all students in the integrated DataFrame.
+    """Compute Student Success Scores and all pillar metrics across a DataFrame."""
+    res_df = df.copy()
 
-    Adds columns:
-    - success_score: the composite score (0–100 or NaN)
-    - data_completeness: percentage of indicators available
-    - available_indicators: count of available indicators
-    - strongest_indicator: name of strongest indicator
-    - weakest_indicator: name of weakest indicator
-    - Individual indicator scores: academic_score, attendance_score, etc.
-    - Individual contributions: academic_contribution, etc.
-    """
-    if df.empty:
-        return df.copy()
+    scores = []
+    completeness = []
+    strongest = []
+    weakest = []
 
-    results = df.apply(lambda row: calculate_student_score(row, weights), axis=1)
+    # Pillar columns
+    acad_list = []
+    att_list = []
+    lms_list = []
+    place_list = []
+    skills_list = []
+    eng_list = []
 
-    scored_df = df.copy()
-    scored_df["success_score"] = [r["score"] for r in results]
-    scored_df["data_completeness"] = [r["data_completeness"] for r in results]
-    scored_df["available_indicators"] = [r["available_count"] for r in results]
-    scored_df["strongest_indicator"] = [r["strongest"] for r in results]
-    scored_df["weakest_indicator"] = [r["weakest"] for r in results]
+    for _, row in res_df.iterrows():
+        calc = calculate_student_score(row, weights)
+        scores.append(calc["score"])
+        completeness.append(calc["completeness_pct"])
+        strongest.append(calc["strongest_pillar"])
+        weakest.append(calc["weakest_pillar"])
 
-    # Individual indicator scores
-    for indicator in INDICATOR_EXTRACTORS:
-        scored_df[f"{indicator}_score_calc"] = [r["indicators"][indicator] for r in results]
+        pillars = calc["pillars"]
+        acad_list.append(pillars.get("academic_performance"))
+        att_list.append(pillars.get("attendance"))
+        lms_list.append(pillars.get("lms_completion"))
+        place_list.append(pillars.get("placement_readiness"))
+        skills_list.append(pillars.get("skills_assessment"))
+        eng_list.append(pillars.get("engagement_feedback"))
 
-    # Individual contributions
-    for indicator in INDICATOR_EXTRACTORS:
-        scored_df[f"{indicator}_contribution"] = [r["contributions"][indicator] for r in results]
+    res_df["success_score"] = scores
+    res_df["data_completeness_pct"] = completeness
+    res_df["strongest_pillar"] = strongest
+    res_df["weakest_pillar"] = weakest
 
-    # Effective weights (same for all students with same available data)
-    for indicator in INDICATOR_EXTRACTORS:
-        scored_df[f"{indicator}_effective_weight"] = [r["effective_weights"][indicator] for r in results]
+    res_df["pillar_academic"] = acad_list
+    res_df["pillar_attendance"] = att_list
+    res_df["pillar_lms"] = lms_list
+    res_df["pillar_placement"] = place_list
+    res_df["pillar_skills"] = skills_list
+    res_df["pillar_engagement"] = eng_list
 
-    return scored_df
-
-
-def get_score_explanation(score_result: dict) -> list[str]:
-    """
-    Generate a human-readable explanation of how the score was calculated.
-    Returns a list of explanation lines.
-    """
-    lines = []
-
-    if score_result["score"] is None:
-        lines.append("❌ Student Success Score is **unavailable** — no valid indicator data found.")
-        lines.append("Upload additional data to calculate a score.")
-        return lines
-
-    lines.append(f"**Student Success Score: {score_result['score']}/100**")
-    lines.append(f"Data completeness: {score_result['data_completeness']}% "
-                 f"({score_result['available_count']}/{score_result['total_count']} indicators)")
-    lines.append("")
-    lines.append("**Score Breakdown:**")
-
-    for indicator, label in INDICATOR_LABELS.items():
-        value = score_result["indicators"][indicator]
-        weight = score_result["effective_weights"][indicator]
-        contrib = score_result["contributions"][indicator]
-
-        if value is not None:
-            lines.append(
-                f"- {label}: {value:.1f}/100 × {weight:.1%} weight = {contrib:.1f} points"
-            )
-        else:
-            lines.append(f"- {label}: No data available (weight redistributed)")
-
-    if score_result["strongest"]:
-        lines.append(f"\n💪 **Strongest:** {INDICATOR_LABELS[score_result['strongest']]}")
-    if score_result["weakest"]:
-        lines.append(f"⚠️ **Needs attention:** {INDICATOR_LABELS[score_result['weakest']]}")
-
-    return lines
+    return res_df

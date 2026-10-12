@@ -1,1 +1,1 @@
-# EduPredict AI Modules
+"""EduPredict AI - Core Modules Package."""

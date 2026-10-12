@@ -1,1 +1,1 @@
-# EduPredict AI Tests
+"""EduPredict AI - Automated Test Suite."""

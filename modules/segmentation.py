@@ -1,200 +1,161 @@
-"""
-segmentation.py — Student segmentation into actionable groups.
+"""Student segmentation module with deterministic precedence classification rules.
 
-Classifies students into meaningful segments based on their indicator data.
-Uses explicit, documented classification rules with clear precedence to
-minimize overlapping segments.
-
-Segments:
-1. "Strong Academics, Low Placement" — Good academic record but low placement scores
-2. "Low Attendance, Reasonable Academics" — Attendance issue despite decent marks
-3. "Low Academics, Adequate Attendance" — Academic struggle despite attending classes
-4. "Strong Overall Performance" — Performing well across available indicators
-5. "Multiple Support Needs" — Struggling in several areas
-6. "Insufficient Data" — Not enough data to classify
-
-Precedence (evaluated in order):
-1. Insufficient Data — checked first, needs minimum indicators
-2. Multiple Support Needs — checked second (catches severe cases early)
-3. Strong Overall — checked third (rewards strong students)
-4. Specific segments — checked last (nuanced classification)
+EduPredict AI - byteXL HacXLerate 2026 (Problem Statement 4 by KPMG in India)
 """
 
-import pandas as pd
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+import pandas as pd
 
 
-# ---------- Configurable Segment Thresholds ----------
-
-SEGMENT_THRESHOLDS = {
-    "academic_strong": 65,      # Above = strong academics
-    "academic_low": 50,         # Below = low academics
-    "attendance_good": 75,      # Above = reasonable/good attendance
-    "attendance_low": 65,       # Below = low attendance
-    "placement_low": 50,        # Below = low placement readiness
-    "placement_good": 60,       # Above = adequate placement
-    "overall_strong": 70,       # All indicators above this = strong overall
-    "min_indicators": 2,        # Minimum indicators needed for classification
+SEGMENT_DEFINITIONS = {
+    "Insufficient data": {
+        "description": "Critical indicators are missing (<35% completeness or score unavailable); profile cannot be reliably evaluated.",
+        "color": "#94a3b8",
+        "priority": 1,
+    },
+    "Multiple support needs": {
+        "description": "Student flagged for both academic and placement/attendance support; highest intervention priority.",
+        "color": "#ef4444",
+        "priority": 2,
+    },
+    "Low attendance, reasonable academics": {
+        "description": "Maintains good academic results despite poor attendance; risk of disengagement or attendance-shortage bar.",
+        "color": "#f59e0b",
+        "priority": 3,
+    },
+    "Low academics, adequate attendance": {
+        "description": "Attends classes regularly but struggles with academic conceptual understanding or exam performance.",
+        "color": "#f97316",
+        "priority": 4,
+    },
+    "Strong academics, low placement readiness": {
+        "description": "High CGPA/theory knowledge but lacks competitive aptitude, coding skills, or interview readiness.",
+        "color": "#8b5cf6",
+        "priority": 5,
+    },
+    "Strong performance across available indicators": {
+        "description": "Excels across academics, attendance, technical skills, and placement preparation.",
+        "color": "#10b981",
+        "priority": 6,
+    },
+    "Moderate / Consistent progress": {
+        "description": "Satisfactory, balanced progress across available metrics without acute risk triggers.",
+        "color": "#06b6d4",
+        "priority": 7,
+    },
 }
 
 
-def classify_student(row: pd.Series) -> dict:
+def classify_student_segment(row: pd.Series) -> str:
+    """Classify a student into exactly one mutually-distinct segment using strict precedence.
+    
+    Precedence minimizes ambiguities and overlapping assignments:
+    1. Insufficient data
+    2. Multiple support needs
+    3. Low attendance, reasonable academics
+    4. Low academics, adequate attendance
+    5. Strong academics, low placement readiness
+    6. Strong performance across available indicators
+    7. Moderate / Consistent progress
     """
-    Classify a student into a segment.
+    completeness = row.get("data_completeness_pct", 100.0)
+    score = row.get("success_score")
+    acad_risk = row.get("academic_risk_status", "On track")
+    place_risk = row.get("placement_risk_status", "On track")
 
-    Returns dict with:
-    - segment: str — segment name
-    - reason: str — explanation for classification
-    - priority: int — for sorting (lower = higher priority)
-    """
-    # Collect available indicators
-    marks = row.get("avg_total_marks")
-    attendance = row.get("attendance_percentage")
-    placement_score = None
-    success_score = row.get("success_score")
+    cgpa = row.get("cgpa")
+    att = row.get("attendance_pct")
+    apt = row.get("aptitude_score")
+    mock = row.get("mock_interview_score")
+    backlogs = row.get("backlogs", 0)
 
-    # Calculate average placement from available sub-scores
-    placement_cols = ["aptitude_score", "coding_score", "communication_score", "mock_interview_score"]
-    placement_values = []
-    for col in placement_cols:
-        val = row.get(col)
-        if pd.notna(val):
-            placement_values.append(float(val))
-    if placement_values:
-        placement_score = sum(placement_values) / len(placement_values)
+    acad_pillar = row.get("pillar_academic")
+    att_pillar = row.get("pillar_attendance")
+    place_pillar = row.get("pillar_placement")
 
-    has_marks = pd.notna(marks)
-    has_attendance = pd.notna(attendance)
-    has_placement = placement_score is not None
+    # Rule 1: Insufficient Data (Highest precedence)
+    if (pd.isna(score) or completeness < 35.0 or
+        (acad_risk == "Insufficient data" and place_risk == "Insufficient data")):
+        return "Insufficient data"
 
-    indicator_count = sum([has_marks, has_attendance, has_placement])
+    # Rule 2: Multiple support needs
+    if (acad_risk == "Support recommended" and place_risk == "Support recommended"):
+        return "Multiple support needs"
+    
+    # Secondary multiple need check if explicit pillar drops
+    if (not pd.isna(backlogs) and int(backlogs) >= 2 and
+        not pd.isna(att) and float(att) < 65.0 and
+        not pd.isna(apt) and float(apt) < 50.0):
+        return "Multiple support needs"
 
-    # --- Precedence-based classification ---
+    # Rule 3: Low attendance, reasonable academics
+    has_att = not pd.isna(att)
+    has_cgpa = not pd.isna(cgpa)
+    if has_att and float(att) < 75.0:
+        if (has_cgpa and float(cgpa) >= 7.0) or (not pd.isna(acad_pillar) and float(acad_pillar) >= 65.0):
+            return "Low attendance, reasonable academics"
 
-    # 1. Insufficient Data
-    if indicator_count < SEGMENT_THRESHOLDS["min_indicators"]:
-        return {
-            "segment": "Insufficient Data",
-            "reason": f"Only {indicator_count} indicator(s) available; need at least {SEGMENT_THRESHOLDS['min_indicators']} for classification",
-            "priority": 6,
-        }
+    # Rule 4: Low academics, adequate attendance
+    if has_att and float(att) >= 75.0:
+        if ((has_cgpa and float(cgpa) < 6.0) or
+            (not pd.isna(backlogs) and int(backlogs) >= 2) or
+            (not pd.isna(acad_pillar) and float(acad_pillar) < 55.0)):
+            return "Low academics, adequate attendance"
 
-    marks_val = float(marks) if has_marks else None
-    att_val = float(attendance) if has_attendance else None
+    # Rule 5: Strong academics, low placement readiness
+    is_strong_acad = (has_cgpa and float(cgpa) >= 7.5) or (not pd.isna(acad_pillar) and float(acad_pillar) >= 75.0)
+    is_low_place = (
+        place_risk == "Support recommended" or
+        (not pd.isna(place_pillar) and float(place_pillar) < 60.0) or
+        (not pd.isna(apt) and float(apt) < 55.0) or
+        (not pd.isna(mock) and float(mock) < 50.0)
+    )
+    if is_strong_acad and is_low_place:
+        return "Strong academics, low placement readiness"
 
-    # 2. Multiple Support Needs — at least 2 of 3 indicators below low thresholds
-    low_count = 0
-    low_areas = []
-    if has_marks and marks_val < SEGMENT_THRESHOLDS["academic_low"]:
-        low_count += 1
-        low_areas.append(f"academics ({marks_val:.1f}%)")
-    if has_attendance and att_val < SEGMENT_THRESHOLDS["attendance_low"]:
-        low_count += 1
-        low_areas.append(f"attendance ({att_val:.1f}%)")
-    if has_placement and placement_score < SEGMENT_THRESHOLDS["placement_low"]:
-        low_count += 1
-        low_areas.append(f"placement ({placement_score:.1f})")
+    # Rule 6: Strong performance across available indicators
+    is_high_score = not pd.isna(score) and float(score) >= 75.0
+    att_ok = pd.isna(att) or float(att) >= 78.0
+    place_ok = pd.isna(place_pillar) or float(place_pillar) >= 70.0
+    acad_ok = pd.isna(acad_pillar) or float(acad_pillar) >= 75.0
 
-    if low_count >= 2:
-        return {
-            "segment": "Multiple Support Needs",
-            "reason": f"Below thresholds in: {', '.join(low_areas)}",
-            "priority": 5,
-        }
+    if is_high_score and att_ok and place_ok and acad_ok:
+        return "Strong performance across available indicators"
 
-    # 3. Strong Overall — all available indicators above strong thresholds
-    all_strong = True
-    strong_details = []
-    if has_marks:
-        if marks_val >= SEGMENT_THRESHOLDS["overall_strong"]:
-            strong_details.append(f"academics ({marks_val:.1f}%)")
-        else:
-            all_strong = False
-    if has_attendance:
-        if att_val >= SEGMENT_THRESHOLDS["attendance_good"]:
-            strong_details.append(f"attendance ({att_val:.1f}%)")
-        else:
-            all_strong = False
-    if has_placement:
-        if placement_score >= SEGMENT_THRESHOLDS["placement_good"]:
-            strong_details.append(f"placement ({placement_score:.1f})")
-        else:
-            all_strong = False
-
-    if all_strong and len(strong_details) >= 2:
-        return {
-            "segment": "Strong Overall Performance",
-            "reason": f"Strong in: {', '.join(strong_details)}",
-            "priority": 1,
-        }
-
-    # 4. Strong Academics, Low Placement
-    if has_marks and has_placement:
-        if marks_val >= SEGMENT_THRESHOLDS["academic_strong"] and placement_score < SEGMENT_THRESHOLDS["placement_low"]:
-            return {
-                "segment": "Strong Academics, Low Placement",
-                "reason": f"Academics strong ({marks_val:.1f}%) but placement low ({placement_score:.1f})",
-                "priority": 2,
-            }
-
-    # 5. Low Attendance, Reasonable Academics
-    if has_attendance and has_marks:
-        if att_val < SEGMENT_THRESHOLDS["attendance_low"] and marks_val >= SEGMENT_THRESHOLDS["academic_low"]:
-            return {
-                "segment": "Low Attendance, Reasonable Academics",
-                "reason": f"Attendance low ({att_val:.1f}%) but academics adequate ({marks_val:.1f}%)",
-                "priority": 3,
-            }
-
-    # 6. Low Academics, Adequate Attendance
-    if has_marks and has_attendance:
-        if marks_val < SEGMENT_THRESHOLDS["academic_low"] and att_val >= SEGMENT_THRESHOLDS["attendance_good"]:
-            return {
-                "segment": "Low Academics, Adequate Attendance",
-                "reason": f"Academics low ({marks_val:.1f}%) despite good attendance ({att_val:.1f}%)",
-                "priority": 4,
-            }
-
-    # Default: if no specific segment matches, classify based on overall trend
-    if has_marks and marks_val >= SEGMENT_THRESHOLDS["academic_strong"]:
-        return {
-            "segment": "Strong Overall Performance",
-            "reason": f"Generally performing well (academics: {marks_val:.1f}%)",
-            "priority": 1,
-        }
-
-    # Fallback — student doesn't fit neatly into a specific segment
-    return {
-        "segment": "Needs Review",
-        "reason": "Indicators mixed; does not fit a specific segment clearly",
-        "priority": 3,
-    }
+    # Rule 7: Default fallback category
+    return "Moderate / Consistent progress"
 
 
-def segment_all_students(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Classify all students into segments.
-    Adds columns: segment, segment_reason, segment_priority
-    """
-    if df.empty:
-        return df.copy()
-
-    results = df.apply(classify_student, axis=1)
-
-    segmented_df = df.copy()
-    segmented_df["segment"] = [r["segment"] for r in results]
-    segmented_df["segment_reason"] = [r["reason"] for r in results]
-    segmented_df["segment_priority"] = [r["priority"] for r in results]
-
-    return segmented_df
+def compute_dataset_segments(df: pd.DataFrame) -> pd.DataFrame:
+    """Classify all students in dataset into distinct segments."""
+    res_df = df.copy()
+    segments = [classify_student_segment(row) for _, row in res_df.iterrows()]
+    res_df["student_segment"] = segments
+    return res_df
 
 
-def get_segment_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Get a summary of segment counts with percentages."""
-    if "segment" not in df.columns or df.empty:
-        return pd.DataFrame(columns=["Segment", "Count", "Percentage"])
+def get_segment_statistics(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate summary statistics per student segment."""
+    if "student_segment" not in df.columns:
+        return pd.DataFrame()
 
-    counts = df["segment"].value_counts().reset_index()
-    counts.columns = ["Segment", "Count"]
-    counts["Percentage"] = (counts["Count"] / len(df) * 100).round(1)
-    return counts.sort_values("Count", ascending=False)
+    total = len(df)
+    stats = []
+
+    for seg_name, meta in SEGMENT_DEFINITIONS.items():
+        sub = df[df["student_segment"] == seg_name]
+        count = len(sub)
+        pct = round((count / total) * 100.0, 1) if total > 0 else 0.0
+        avg_score = round(float(sub["success_score"].dropna().mean()), 1) if not sub["success_score"].dropna().empty else None
+
+        stats.append({
+            "segment": seg_name,
+            "count": count,
+            "percentage": pct,
+            "average_score": avg_score,
+            "description": meta["description"],
+            "color": meta["color"],
+        })
+
+    return pd.DataFrame(stats)

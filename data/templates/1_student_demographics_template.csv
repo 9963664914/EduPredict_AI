@@ -1,0 +1,11 @@
+student_id,name,department,semester,gender
+STU0001,Ishaan Pandey,Information Technology,Semester 6,Male
+STU0002,Kavya Aggarwal,Electronics & Comm,Semester 8,Female
+STU0003,Nikhil Reddy,Mechanical,Semester 4,Male
+STU0004,Priya Mehta,Data Science & AI,Semester 6,Female
+STU0005,Rohan Bose,Computer Science,Semester 8,Male
+STU0006,Sneha Deshmukh,Information Technology,Semester 4,Female
+STU0007,Vikram Sharma,Electronics & Comm,Semester 6,Male
+STU0008,Meera Iyer,Mechanical,Semester 8,Female
+STU0009,Kabir Kumar,Data Science & AI,Semester 4,Male
+STU0010,Swati Chatterjee,Computer Science,Semester 6,Female
