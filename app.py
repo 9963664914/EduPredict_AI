@@ -5,6 +5,11 @@ byteXL HacXLerate 2026 | Problem Statement 4 by KPMG in India
 
 import os
 from typing import Dict, List, Optional, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 import numpy as np
 import pandas as pd
 import streamlit as st
