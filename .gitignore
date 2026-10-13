@@ -20,6 +20,10 @@ htmlcov/
 .streamlit/
 *.log
 
+# Node.js
+node_modules/
+npm-debug.log*
+
 # Environment & Secrets
 .env
 .env.*

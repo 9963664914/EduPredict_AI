@@ -1,0 +1,14 @@
+{
+  "name": "edupredict-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EduPredict AI student analytics and success platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

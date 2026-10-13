@@ -28,7 +28,7 @@ graph TD
     G --> J
     I --> J
     J -->|Rule-Based Interventions| K[Actionable Faculty & Mentor Workflows]
-    K --> L[Streamlit Interactive Dashboard]
+    K --> L[Node.js Interactive Dashboard]
     L --> M[Audit-Ready CSV Reports & Exports]
 ```
 
@@ -47,7 +47,7 @@ graph TD
 
 2. **Executive Student Success Dashboard**
    - KPI metrics: Total cohort, Average Success Score, Academic Support Needed, Placement Support Needed, and Average Attendance & CGPA.
-   - Interactive Plotly visualizations: Score distribution histograms, Academic vs. Placement quadrant scatter plots with benchmark lines, Departmental performance comparisons, and Cohort segmentation donut charts.
+   - Interactive browser-native visualizations: score distribution histograms, academic vs. placement scatter plots, departmental performance comparisons, and cohort segmentation charts.
    - Automated real-time diagnostic insight banners synthesizing cohort strengths and bottlenecks.
 
 3. **Data Integration & Quality Audit Engine**
@@ -110,50 +110,37 @@ If $|P_{valid}| = 0$, $S_i = \text{NaN}$ *(Unavailable)*.
 ## 💻 Installation & Windows Setup
 
 ### Prerequisites
-- Python 3.10+ (tested on Python 3.14 on Windows)
+- Node.js 18 or newer
 - PowerShell or Windows Command Prompt
 
 ### Step-by-Step Setup Commands (PowerShell)
 
 ```powershell
-# 1. Clone or navigate to the project directory
+# Navigate to the project directory, then launch the application
 cd "c:\Users\ASUS\OneDrive\Desktop\byte xl project"
-
-# 2. Create and activate a Python virtual environment (optional but recommended)
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# 3. Install dependencies
-python -m pip install -r requirements.txt
-
-# 4. Run automated test suite
-python -m pytest tests -v
-
-# 5. Launch the Streamlit application
-python -m streamlit run app.py
+node server.js
 ```
 
-The application will automatically open in your default browser at `http://localhost:8501`.
+Open `http://localhost:8501` in your browser. The application uses Node.js built-in modules and does not require a package installation. `run.bat` and `run.ps1` are also provided as Windows launchers.
 
 ---
 
 ## 🧪 Automated Testing
 
-The project includes unit tests covering data validation, missing indicators, score boundaries, weight re-normalization, risk classification, segmentation precedence, and recommendations:
+The project includes Node.js tests for CSV parsing, data validation, missing indicators, score bounds, weight re-normalization, risk classification, and the cohort processing pipeline:
 
-```powershell
-python -m pytest tests -v
+```sh
+npm test
 ```
 
 Tests verify:
-- ✅ Handling of complete and incomplete student records
+- ✅ CSV quoting, line breaks, and missing-value handling
 - ✅ Correct dynamic weight re-normalization when indicators are missing
-- ✅ Graceful return of `NaN` (unavailable) when zero valid indicators exist
+- ✅ Unavailable score when zero valid indicators exist
 - ✅ Enforcement of score bounds between $0.0$ and $100.0$
 - ✅ Range validation and duplicate ID detection
-- ✅ Precedence hierarchy in student segmentation
-- ✅ Independent academic vs placement risk evaluation
-- ✅ Accuracy of explainable recommendation triggers
+- ✅ Outer-join behavior when departmental tables are merged
+- ✅ Student risk statuses, segments, and intervention recommendations across the sample cohort
 
 ---
 
@@ -194,7 +181,7 @@ Located in `data/templates/`:
 
 ### Minute 3: Student Explorer & Full Explainability
 - *Navigate to **Student Explorer**: Select a student (e.g. `STU0014` or `STU0021`).*
-- *Show the **Spider Radar Chart** comparing the student against benchmark 75.*
+- *Show the six-pillar diagnostic breakdown, effective weights, and support factors.*
 - *Open **Step-by-Step Mathematical Calculation**: Explain dynamic weight re-normalization when indicators are missing (highlighting that missing data is never silently zeroed out).*
 - *Show **Independent Risk Factors** and **Explainable Interventions**.*
 
